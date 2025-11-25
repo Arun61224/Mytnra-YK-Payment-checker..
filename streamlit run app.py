@@ -214,7 +214,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
 # ---------------------------------------------------------------------------------
-# --- MODIFIED: Combined Settlement Pivot Processor (Added Numeric Conversion) ---
+# --- Combined Settlement Pivot Processor (Numeric Conversion retained) ---
 # ---------------------------------------------------------------------------------
 
 def process_combined_settlement(all_csv_objects):
@@ -306,17 +306,15 @@ def process_combined_settlement(all_csv_objects):
         'Total_Receivable': 'Total Receivable' 
     }, inplace=True) 
     
-    # ------------------ ADDED LOGIC FOR NUMERIC CONVERSION ------------------
+    # --- NUMERIC CONVERSION (FOR EXCEL OUTPUT) ---
     try:
-        # Step 1: Attempt to convert to numeric, coercing errors to NaN
-        # Step 2: Convert to pd.Int64Dtype, which supports large integers and handles NaNs
         pivot_table['order_id'] = pd.to_numeric(
             pivot_table['order_id'], errors='coerce'
         ).astype(pd.Int64Dtype())
         st.success("✅ **'order_id'** in Payment_Pivot converted to large numeric format (Int64).")
     except Exception as e:
-        # If Int64 conversion fails, ensure it is still a clean string for merging
-        st.warning(f"⚠️ Warning: Could not convert 'order_id' to Int64 type in Payment_Pivot ({e}). Keeping as string for safety.")
+        st.warning(f"⚠️ Warning: Could not convert 'order_id' to Int64 type in Payment_Pivot. Keeping as string for merge/safety. ({e})")
+        # Ensure it is at least a clean string if Int64 conversion fails
         pivot_table['order_id'] = pivot_table['order_id'].astype(str)
     # ------------------------------------------------------------------------
 
@@ -327,7 +325,7 @@ def process_combined_settlement(all_csv_objects):
     return pivot_table
 
 # ---------------------------------------------------------------------------------
-# --- MODIFIED FUNCTION: Create Final Report Sheet (Order ID Numeric Conversion logic kept) ---
+# --- MODIFIED: Create Final Report Sheet (Added Safe String Conversion for Merge) ---
 # ---------------------------------------------------------------------------------
 
 def create_final_packed_sheet(packed_df, payment_pivot_df):
@@ -354,28 +352,16 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
     # 1. Merge Payment Data (using 'order_id')
     if payment_pivot_df is not None:
         
-        # --- ROBUST MERGE KEY CONVERSION ---
-        # IDs must be converted to a common type (string is the fallback) for merging.
-        # Since we modified the pivot table to be Int64Dtype, we check the type here for clean merge.
+        # --- SAFE MERGE KEY CONVERSION (Force String for Merge Compatibility) ---
+        # IDs को मर्ज करने से पहले हमेशा clean string में बदल दें, चाहे वे बाद में Int64 हों या नहीं।
+        packed_df['order_id'] = packed_df['order_id'].astype(str).str.strip().fillna('NO_PACKED_ID')
         
-        # Convert Packed DF order_id to string if it's not already numeric compatible
-        packed_df['order_id_temp'] = packed_df['order_id'].astype(str).str.strip().fillna('')
+        # pivot_table का order_id पहले ही process_combined_settlement में Int64 या clean string बन चुका है
+        # हम यहाँ इसे string में force करते हैं, ताकि merge 100% सुरक्षित हो
+        payment_pivot_df['order_id'] = payment_pivot_df['order_id'].astype(str).str.strip().fillna('NO_PIVOT_ID')
         
-        # Merge key setup: If pivot is Int64, convert packed_df to Int64 for robust merge
-        if pd.api.types.is_extension_array_dtype(payment_pivot_df['order_id'].dtype, 'Int64'):
-             try:
-                 packed_df['order_id'] = pd.to_numeric(packed_df['order_id_temp'], errors='coerce').astype(pd.Int64Dtype())
-                 st.info("Merging on Int64 ID type.")
-             except:
-                 # Fallback to string if conversion for merging fails
-                 packed_df['order_id'] = packed_df['order_id_temp']
-                 payment_pivot_df['order_id'] = payment_pivot_df['order_id'].astype(str)
-                 st.info("Merging on String ID type (Fallback).")
-        else:
-            # Fallback for when Payment_Pivot conversion failed (it is already string)
-            packed_df['order_id'] = packed_df['order_id_temp']
-        
-        packed_df.drop(columns=['order_id_temp'], inplace=True, errors='ignore')
+        st.info("Ensuring 'order_id' is clean string format for safe merging.")
+        # -----------------------------------------------------------------------
 
 
         # Merge both Settled and Outstanding amounts
@@ -416,7 +402,7 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
         'tax_amount', 
         'quantity', 
         'cost_price', 
-        'total_settled_amount',      # Payment Received (Renamed below)
+        'total_settled_amount',      
         'total_outstanding_amount', 
         'total_payment'             
     ]
@@ -431,7 +417,7 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
         'tax_amount': 'Tax_Amount',
         'quantity': 'Quantity',
         'cost_price': 'Cost_Price',
-        'total_settled_amount': 'Payment_Received', # RENAMED HERE for clarity
+        'total_settled_amount': 'Payment_Received', 
         'total_outstanding_amount': 'Total_Outstanding_Amount',
         'total_payment': 'Total_Payment_Settled_Plus_Outstanding' 
     }
@@ -446,16 +432,16 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
     
     final_report_df.columns = [col_mapping.get(col, col) for col in final_report_df.columns]
     
-    # --- ORDER_ID NUMERIC CONVERSION (FOR DISPLAY) ---
+    # --- ORDER_ID NUMERIC CONVERSION (FOR FINAL DISPLAY/EXCEL) ---
     if 'Order_ID' in final_report_df.columns:
         try:
-            # Re-convert here for final display, assuming merge was successful on Int64 or String
+            # Convert to numeric for Excel output (safe Int64 with NaN support)
             final_report_df['Order_ID'] = pd.to_numeric(
                 final_report_df['Order_ID'], errors='coerce'
             ).astype(pd.Int64Dtype())
-            st.success("✅ **'Order_ID'** in Final_Report retained large numeric format (Int64).")
+            st.success("✅ **'Order_ID'** in Final_Report is now large numeric format (Int64).")
         except Exception as e:
-            st.warning(f"⚠️ Warning: Could not ensure 'Order_ID' is Int64 in Final_Report. Keeping as string. ({e})")
+            st.warning(f"⚠️ Warning: Could not ensure 'Order_ID' is Int64 in Final_Report. Keeping as string for safety. ({e})")
 
     
     st.success("Final Packed Report sheet created. Check the bottom right of the table for payment columns.")
@@ -483,7 +469,7 @@ def convert_dataframes_to_excel(df_packed, df_rt, df_rto, df_merged_pivot, df_fi
     return processed_excel_data
 
 
-# --- Streamlit डैशबोर्ड लेआउट (Updated Execution Flow) ---
+# --- Streamlit डैशबोर्ड लेआउट (NO CHANGE) ---
 
 def main():
     st.set_page_config(
