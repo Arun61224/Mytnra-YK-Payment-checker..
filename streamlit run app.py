@@ -47,10 +47,23 @@ def handle_settlement_zip(zip_file, process_name):
         st.error(f"An error occurred during {process_name} ZIP file extraction: {e}")
         return []
 
+# --- फ़ंक्शन: Outstanding CSV हैंडलिंग (नया) ---
+def handle_outstanding_csv(csv_file):
+    """Outstanding CSV फ़ाइल को StringIO ऑब्जेक्ट में बदलता है।"""
+    if csv_file is None:
+        return []
+    try:
+        # फ़ाइल को सीधे StringIO ऑब्जेक्ट में बदलें
+        file_content = csv_file.getvalue().decode('utf-8', errors='ignore')
+        return [io.StringIO(file_content)]
+    except Exception as e:
+        st.error(f"An error occurred during Outstanding CSV file handling: {e}")
+        return []
+
 # --- SKU Merger (नो चेंज) ---
 
 def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file):
-    # ... (Logic remains the same) ...
+    # ... (Logic remains the same as previous response) ...
     st.subheader("1. SKU Code Merger Process")
     
     try:
@@ -121,30 +134,35 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
-# --- फ़ंक्शन: कंबाइंड सेटलमेंट Pivot Processor (नया लॉजिक) ---
+# --- फ़ंक्शन: कंबाइंड सेटलमेंट Pivot Processor (अपडेटेड) ---
 
-def process_combined_settlement(all_settlement_csv_objects):
+def process_combined_settlement(all_csv_objects):
     """
-    सभी Prepaid और Postpaid Settlement data को पढ़ता है और एक Final Merged Pivot Table बनाता है।
+    सभी Prepaid, Postpaid, और Outstanding data को पढ़ता है और एक Final Merged Pivot Table बनाता है।
     """
-    st.subheader("2. Combined Settlement Pivot (Merged Payment)")
+    st.subheader("2. Combined Settlement & Outstanding Pivot")
     
-    if not all_settlement_csv_objects:
-        st.warning("No Prepaid or Postpaid settlement files were uploaded or extracted successfully.")
+    if not all_csv_objects:
+        st.warning("No settlement or outstanding files were uploaded or extracted successfully.")
         return None
 
     all_dfs = []
     
     # अपेक्षित कॉलम नाम (Normalization के लिए)
     TARGET_COL_ID = 'order_release_id'
-    TARGET_COL_AMOUNT = 'Settled_Amount'
+    
+    # दो संभावित राशि कॉलम - Settled_Amount (Prepaid/Postpaid) और Unsettled_Amount (Outstanding)
+    TARGET_COL_AMOUNT_SETTLED = 'Settled_Amount'
+    TARGET_COL_AMOUNT_UNSETTLED = 'Unsettled_Amount'
     
     # उन नामों को जिन्हें हमें मैच करना है (lowercase, underscores removed)
     MATCH_ID = TARGET_COL_ID.lower().replace('_', '')
-    MATCH_AMOUNT = TARGET_COL_AMOUNT.lower().replace('_', '')
+    MATCH_SETTLED = TARGET_COL_AMOUNT_SETTLED.lower().replace('_', '')
+    MATCH_UNSETTLED = TARGET_COL_AMOUNT_UNSETTLED.lower().replace('_', '')
 
-    for i, file_obj in enumerate(all_settlement_csv_objects):
-        file_name = f"Combined_Settlement_File_{i+1}"
+
+    for i, file_obj in enumerate(all_csv_objects):
+        file_name = f"Combined_Payment_File_{i+1}"
         try:
             df = pd.read_csv(file_obj)
             
@@ -153,50 +171,57 @@ def process_combined_settlement(all_settlement_csv_objects):
             
             found_id_name = None
             found_amount_name = None
+            amount_type = None # Settled या Unsettled
 
             for original_name, norm_name in normalized_cols.items():
                 if norm_name == MATCH_ID:
                     found_id_name = original_name
-                if norm_name == MATCH_AMOUNT:
+                # Settled_Amount को पहले खोजें
+                if norm_name == MATCH_SETTLED:
                     found_amount_name = original_name
+                    amount_type = 'Settled'
+                # अगर Settled_Amount नहीं मिला, तो Unsettled_Amount खोजें
+                elif norm_name == MATCH_UNSETTLED:
+                    found_amount_name = original_name
+                    amount_type = 'Unsettled'
             
             if not found_id_name or not found_amount_name:
-                st.error(f"File **{file_name}** is missing required columns. Expected '{TARGET_COL_ID}' and '{TARGET_COL_AMOUNT}'. Skipping.")
+                st.error(f"File **{file_name}** is missing required ID or Amount columns. Skipping.")
                 continue
 
             # केवल आवश्यक कॉलम चुनें
             df_subset = df[[found_id_name, found_amount_name]].copy()
             
-            # कॉलम को अपेक्षित नाम दें
+            # राशि कॉलम को एक स्टैंडर्ड नाम दें (Total_Amount)
             df_subset.rename(columns={
                 found_id_name: TARGET_COL_ID, 
-                found_amount_name: TARGET_COL_AMOUNT
+                found_amount_name: 'Total_Amount'
             }, inplace=True)
             
-            # Settled_Amount को numeric में बदलें 
-            df_subset[TARGET_COL_AMOUNT] = pd.to_numeric(df_subset[TARGET_COL_AMOUNT], errors='coerce')
+            # Total_Amount को numeric में बदलें 
+            df_subset['Total_Amount'] = pd.to_numeric(df_subset['Total_Amount'], errors='coerce')
             
             all_dfs.append(df_subset)
-            st.success(f"**{file_name}** read successfully.")
+            st.success(f"**{file_name}** read successfully. Amount found: **{amount_type}**.")
             
         except Exception as e:
             st.error(f"Error reading **{file_name}**: {e}")
             
     if not all_dfs:
-        st.error("No combined settlement data could be processed successfully.")
+        st.error("No combined payment data could be processed successfully.")
         return None
         
     combined_df = pd.concat(all_dfs, ignore_index=True)
     
-    # Final Pivot Table बनाएँ (Prepaid + Postpaid डेटा को मिलाकर)
-    pivot_table = combined_df.groupby(TARGET_COL_ID)[TARGET_COL_AMOUNT].sum().reset_index()
-    pivot_table.rename(columns={TARGET_COL_AMOUNT: 'Total_Settled_Amount'}, inplace=True)
+    # Final Pivot Table बनाएँ (सभी डेटा को मिलाकर)
+    pivot_table = combined_df.groupby(TARGET_COL_ID)['Total_Amount'].sum().reset_index()
+    pivot_table.rename(columns={'Total_Amount': 'Total_Settled_Outstanding_Amount'}, inplace=True)
     
-    st.success("Final Merged Payment Pivot Table created successfully.")
+    st.success("Final Merged Payment & Outstanding Pivot Table created successfully.")
     return pivot_table
 
 
-# --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (अपडेटेड) ---
+# --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (नो चेंज) ---
 
 def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_merged_pivot):
     """
@@ -247,7 +272,7 @@ def main():
     )
     
     st.sidebar.markdown("---")
-    st.sidebar.header("🧾 2. Settlement Files (Prepaid & Postpaid)")
+    st.sidebar.header("🧾 2. Payment Files (Settled & Outstanding)")
     
     prepaid_zip_file = st.sidebar.file_uploader(
         "Upload **Prepaid Settlement CSVs as a single ZIP**", 
@@ -261,6 +286,13 @@ def main():
         key="postpaid_zip"
     )
     
+    # नया CSV अपलोडर
+    outstanding_csv_file = st.sidebar.file_uploader(
+        "Upload **Outstanding Payment CSV**", 
+        type=['csv'],
+        key="outstanding_csv"
+    )
+    
     st.markdown("---")
     
     df_merged_pivot = None 
@@ -269,22 +301,23 @@ def main():
     if st.sidebar.button("🚀 Start All Processing"):
         
         # ----------------------------------------------------
-        #             Combined Settlement Execution
+        #             Combined Payment Execution
         # ----------------------------------------------------
         
-        st.header("--- Combined Payment Pivot Results ---")
+        st.header("--- Combined Payment & Outstanding Pivot Results ---")
         
-        # दोनों ZIP से CSV objects इकट्ठा करें
+        # सभी sources से CSV objects इकट्ठा करें
         prepaid_objects = handle_settlement_zip(prepaid_zip_file, "Prepaid")
         postpaid_objects = handle_settlement_zip(postpaid_zip_file, "Postpaid")
+        outstanding_objects = handle_outstanding_csv(outstanding_csv_file) # नया
         
-        all_settlement_csv_objects = prepaid_objects + postpaid_objects
+        all_csv_objects = prepaid_objects + postpaid_objects + outstanding_objects
         
-        if all_settlement_csv_objects:
-            with st.spinner("Processing combined settlement files and creating Merged Pivot Table..."):
-                df_merged_pivot = process_combined_settlement(all_settlement_csv_objects)
+        if all_csv_objects:
+            with st.spinner("Processing all payment files and creating Merged Pivot Table..."):
+                df_merged_pivot = process_combined_settlement(all_csv_objects)
         else:
-            st.warning("Skipping Combined Pivot: No settlement files were uploaded successfully.")
+            st.warning("Skipping Combined Pivot: No payment files were uploaded successfully.")
 
         
         # ----------------------------------------------------
@@ -318,17 +351,17 @@ def main():
             st.download_button(
                 label="⬇️ Download Complete Merged Data (Excel)",
                 data=excel_data,
-                file_name='Merged_SKU_Settlement_Report_Final.xlsx',
+                file_name='Merged_SKU_Settlement_Outstanding_Report_Final.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 key='download_excel'
             )
             st.markdown("---")
             
-            st.subheader("Preview of Merged Payment Pivot (Sheet 4)")
+            st.subheader("Preview of Merged Payment & Outstanding Pivot (Sheet 4)")
             if df_merged_pivot is not None:
                  st.dataframe(df_merged_pivot.head(10))
             else:
-                st.info("Merged Payment Pivot data was not generated.")
+                st.info("Merged Payment & Outstanding Pivot data was not generated.")
 
         else:
             st.error("No data files could be processed successfully to generate the final Excel report.")
