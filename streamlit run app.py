@@ -50,8 +50,13 @@ def handle_outstanding_csv(csv_file):
     if csv_file is None:
         return []
     try:
+        # csv_file is already a File object, use getvalue() if it's a BytesIO object
         file_content = csv_file.getvalue().decode('utf-8', errors='ignore')
         return [io.StringIO(file_content)]
+    except AttributeError:
+        # If it's a regular file upload, pandas will handle it later
+        st.warning("Handling Outstanding file as a direct CSV stream.")
+        return [csv_file]
     except Exception as e:
         st.error(f"An error occurred during Outstanding CSV file handling: {e}")
         return []
@@ -291,18 +296,23 @@ def process_combined_settlement(all_csv_objects):
     
     # Renaming 'order_release_id' to 'order_id' to match Packed sheet for merging
     pivot_table.rename(columns={TARGET_COL_ID: 'order_id'}, inplace=True) 
+    
+    # Ensuring the order_id in pivot is treated as string for robust merging
+    pivot_table['order_id'] = pivot_table['order_id'].astype(str)
 
     st.success("Final Merged Payment Pivot Table created successfully.")
     return pivot_table
 
 # ---------------------------------------------------------------------------------
-# --- MODIFIED FUNCTION: Create Final Report Sheet (Total Payment ADDED) ---
+# --- MODIFIED FUNCTION: Create Final Report Sheet (Added robust string conversion) ---
 # ---------------------------------------------------------------------------------
 
 def create_final_packed_sheet(packed_df, payment_pivot_df):
     """
     Packed data को Payment Pivot data के साथ merge करता है, Total Payment Received/Outstanding 
     कैलकुलेट करता है, और columns को final format में select करता है।
+    
+    Merged IDs को स्ट्रिंग में बदलने के लिए मज़बूत (robust) कन्वर्ज़न लॉजिक जोड़ा गया है।
     """
     if packed_df is None:
         st.error("Packed data is not available for final report generation.")
@@ -312,12 +322,21 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
 
     # Normalize column names in packed_df first
     packed_df.columns = packed_df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('"', '')
+    
+    # Check if 'order_id' exists in Packed DF
+    if 'order_id' not in packed_df.columns:
+         st.error("Critical Error: 'order_id' column not found in Packed.csv, cannot proceed with payment merger.")
+         return packed_df # Return packed data without merge
 
     # 1. Merge Payment Data (using 'order_id')
-    if payment_pivot_df is not None and 'order_id' in packed_df.columns:
-        # We need to ensure both are string type before merging
-        packed_df['order_id'] = packed_df['order_id'].astype(str)
-        payment_pivot_df['order_id'] = payment_pivot_df['order_id'].astype(str)
+    if payment_pivot_df is not None:
+        
+        # --- ROBUST MERGE KEY CONVERSION (CRITICAL) ---
+        # Packed DF में order_id को string में बदलें, NaN को खाली string से भरें
+        packed_df['order_id'] = packed_df['order_id'].astype(str).str.strip().fillna('')
+        
+        # Payment Pivot में order_id को string में बदलें (यह पहले ही हो चुका है, लेकिन यहाँ पुष्टि कर रहे हैं)
+        payment_pivot_df['order_id'] = payment_pivot_df['order_id'].astype(str).str.strip().fillna('')
 
         # Merge both Settled and Outstanding amounts
         final_df = pd.merge(
@@ -326,36 +345,40 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
             on='order_id',
             how='left'
         )
+        # Fill NaN values (where no match was found) with 0.0
         final_df['Total_Settled_Amount'] = final_df['Total_Settled_Amount'].fillna(0.0)
         final_df['Total_Outstanding_Amount'] = final_df['Total_Outstanding_Amount'].fillna(0.0)
         
-        # --- NEW REQUIREMENT: Calculate Total Payment ---
+        # Calculate Total Payment
         final_df['Total_Payment'] = final_df['Total_Settled_Amount'] + final_df['Total_Outstanding_Amount']
         
-        st.success("Packed data successfully merged with all Payment amounts and Total Payment calculated.")
+        # --- DEBUGGING CHECK ---
+        if (final_df['Total_Settled_Amount'] > 0).any():
+             st.success("✅ Payment received amounts found and merged successfully.")
+        else:
+             st.warning("⚠️ Warning: Payment merge successful, but Total_Settled_Amount column is all zeros. Check if Order IDs match between Packed and Payment data.")
+        # -----------------------
+
     else:
         final_df = packed_df.copy()
         final_df['Total_Settled_Amount'] = 0.0
         final_df['Total_Outstanding_Amount'] = 0.0
-        final_df['Total_Payment'] = 0.0 # Default value
-        st.warning("Payment Pivot data not available or 'order_id' missing. Payment amounts set to 0.")
+        final_df['Total_Payment'] = 0.0 
+        st.warning("Payment Pivot data not available. Payment amounts set to 0.")
 
     # 2. Select and format required columns 
-    # NOTE: 'Total_Payment' is placed as the 4th column (Index 3) to match Excel's D column roughly,
-    # following Order_ID, Order_Packed_Date, Brand.
-    
     required_cols_order = [
         'order_id', 
         'order_packed_date', 
         'brand', 
-        'total_payment', # D Column (4th)
         'seller_sku_code', 
         'shipment_value', 
         'tax_amount', 
         'quantity', 
         'cost_price', 
-        'total_settled_amount', 
-        'total_outstanding_amount'
+        'total_settled_amount',      # Payment Received (Renamed below)
+        'total_outstanding_amount', 
+        'total_payment'             
     ]
 
     # Map normalized names to the desired final column names
@@ -363,30 +386,27 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
         'order_id': 'Order_ID',
         'order_packed_date': 'Order_Packed_Date',
         'brand': 'Brand',
-        'total_payment': 'Total_Payment_Settled_Plus_Outstanding', # New Column
         'seller_sku_code': 'Seller_SKU_Code',
         'shipment_value': 'Shipment_Value',
         'tax_amount': 'Tax_Amount',
         'quantity': 'Quantity',
         'cost_price': 'Cost_Price',
-        'total_settled_amount': 'Total_Settled_Amount',
-        'total_outstanding_amount': 'Total_Outstanding_Amount'
+        'total_settled_amount': 'Payment_Received', # RENAMED HERE for clarity
+        'total_outstanding_amount': 'Total_Outstanding_Amount',
+        'total_payment': 'Total_Payment_Settled_Plus_Outstanding' 
     }
     
-    # Select columns in the required order, ensuring they exist
     selected_cols = []
     for col in required_cols_order:
-        # Match against the normalized column names
         normalized_col = col.lower().replace(' ', '_').replace('"', '') 
         if normalized_col in final_df.columns:
             selected_cols.append(normalized_col)
             
     final_report_df = final_df[selected_cols].copy()
     
-    # Rename columns to the desired format
     final_report_df.columns = [col_mapping.get(col, col) for col in final_report_df.columns]
     
-    st.success("Final Packed Report sheet created, columns formatted, and Total Payment calculated.")
+    st.success("Final Packed Report sheet created. Check the bottom right of the table for payment columns.")
     return final_report_df
 
 # --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (NO CHANGE) ---
@@ -487,7 +507,8 @@ def main():
         
         prepaid_objects = handle_settlement_zip(prepaid_zip_file, "Prepaid")
         postpaid_objects = handle_settlement_zip(postpaid_zip_file, "Postpaid")
-        outstanding_objects = handle_outstanding_csv(outstanding_csv_file)
+        # Ensure that handle_outstanding_csv returns a list of file objects
+        outstanding_objects = handle_outstanding_csv(outstanding_csv_file) 
         
         all_csv_objects = prepaid_objects + postpaid_objects + outstanding_objects
         
@@ -543,7 +564,7 @@ def main():
             )
             st.markdown("---")
             
-            st.subheader("Preview of Final Report Sheet (Total Payment at D Column)")
+            st.subheader("Preview of Final Report Sheet (Payment Columns Clearly Grouped)")
             st.dataframe(df_final_report.head(10))
 
         else:
