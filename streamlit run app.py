@@ -61,6 +61,7 @@ def handle_outstanding_csv(csv_file):
 # --- SKU Merger (नो चेंज) ---
 
 def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file):
+    # ... (SKU Merger logic remains the same) ...
     st.subheader("1. SKU Code Merger Process")
     
     try:
@@ -131,31 +132,30 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
-# --- फ़ंक्शन: कंबाइंड सेटलमेंट Pivot Processor (UPDATED) ---
+# --- फ़ंक्शन: कंबाइंड सेटलमेंट Pivot Processor (UPDATED for Bifurcation) ---
 
 def process_combined_settlement(all_csv_objects):
     """
-    सभी Prepaid, Postpaid, और Outstanding data को पढ़ता है और एक Final Merged Pivot Table बनाता है।
-    यह 'order_release_id' और 'Release_Id' दोनों को Order ID के रूप में पहचानता है।
+    सभी Prepaid, Postpaid, और Outstanding data को पढ़ता है और Merged Pivot Table
+    को Settled और Outstanding अमाउंट के Bifurcation के साथ बनाता है।
     """
     st.subheader("2. Combined Settlement & Outstanding Pivot")
     
     if not all_csv_objects:
-        st.warning("No settlement or outstanding files were uploaded or extracted successfully.")
+        st.warning("No payment files were uploaded or extracted successfully.")
         return None
 
     all_dfs = []
     
-    # अपेक्षित कॉलम नाम (Normalization के लिए)
+    # अपेक्षित कॉलम नाम
     TARGET_COL_ID = 'order_release_id'
+    
+    # दो संभावित राशि कॉलम
     TARGET_COL_AMOUNT_SETTLED = 'Settled_Amount'
     TARGET_COL_AMOUNT_UNSETTLED = 'Unsettled_Amount'
     
-    # उन नामों को जिन्हें हमें मैच करना है (lowercase, underscores removed)
-    MATCH_IDS = [
-        'orderreleaseid', # For Prepaid/Postpaid Settlement
-        'releaseid'       # For Outstanding Payment
-    ]
+    # Normalized मैचिंग स्ट्रिंग्स
+    MATCH_IDS = ['orderreleaseid', 'releaseid']
     MATCH_SETTLED = TARGET_COL_AMOUNT_SETTLED.lower().replace('_', '')
     MATCH_UNSETTLED = TARGET_COL_AMOUNT_UNSETTLED.lower().replace('_', '')
 
@@ -165,7 +165,6 @@ def process_combined_settlement(all_csv_objects):
         try:
             df = pd.read_csv(file_obj)
             
-            # कॉलम नामों को Normalize करें: Lowercase + Spaces/Quotes हटाएँ
             normalized_cols = {col: col.strip().replace('"', '').lower().replace('_', '') for col in df.columns}
             
             found_id_name = None
@@ -174,11 +173,11 @@ def process_combined_settlement(all_csv_objects):
 
             for original_name, norm_name in normalized_cols.items():
                 
-                # ID Column Finder (UPDATED)
+                # ID Column Finder
                 if norm_name in MATCH_IDS and found_id_name is None:
                     found_id_name = original_name
                 
-                # Amount Column Finder
+                # Amount Column Finder: Settled has priority, then Unsettled
                 if norm_name == MATCH_SETTLED:
                     found_amount_name = original_name
                     amount_type = 'Settled'
@@ -190,20 +189,31 @@ def process_combined_settlement(all_csv_objects):
                 st.error(f"File **{file_name}** is missing required ID or Amount columns. Skipping.")
                 continue
 
-            # केवल आवश्यक कॉलम चुनें
+            # केवल आवश्यक कॉलम चुनें और अमाउंट टाइप (Settled/Unsettled) को ट्रैक करें
             df_subset = df[[found_id_name, found_amount_name]].copy()
             
             # कॉलम को अपेक्षित नाम दें
             df_subset.rename(columns={
                 found_id_name: TARGET_COL_ID, 
-                found_amount_name: 'Total_Amount'
+                found_amount_name: 'Amount_Value'
             }, inplace=True)
             
-            # Total_Amount को numeric में बदलें 
-            df_subset['Total_Amount'] = pd.to_numeric(df_subset['Total_Amount'], errors='coerce')
+            # Amount Value को numeric में बदलें 
+            df_subset['Amount_Value'] = pd.to_numeric(df_subset['Amount_Value'], errors='coerce')
+            
+            # Bifurcation के लिए कॉलम जोड़ें
+            if amount_type == 'Settled':
+                df_subset['Settled_Amount_Type'] = df_subset['Amount_Value']
+                df_subset['Outstanding_Amount_Type'] = 0.0
+            else: # amount_type == 'Unsettled'
+                df_subset['Settled_Amount_Type'] = 0.0
+                df_subset['Outstanding_Amount_Type'] = df_subset['Amount_Value']
+            
+            # Merged Amount (Total)
+            df_subset['Total_Amount_Type'] = df_subset['Amount_Value']
             
             all_dfs.append(df_subset)
-            st.success(f"**{file_name}** read successfully. ID found: '{found_id_name}', Amount found: **{amount_type}**.")
+            st.success(f"**{file_name}** read successfully. ID found: '{found_id_name}', Type: **{amount_type}**.")
             
         except Exception as e:
             st.error(f"Error reading **{file_name}**: {e}")
@@ -214,11 +224,14 @@ def process_combined_settlement(all_csv_objects):
         
     combined_df = pd.concat(all_dfs, ignore_index=True)
     
-    # Final Pivot Table बनाएँ (सभी डेटा को मिलाकर)
-    pivot_table = combined_df.groupby(TARGET_COL_ID)['Total_Amount'].sum().reset_index()
-    pivot_table.rename(columns={'Total_Amount': 'Total_Settled_Outstanding_Amount'}, inplace=True)
+    # Final Pivot Table बनाएँ
+    pivot_table = combined_df.groupby(TARGET_COL_ID).agg(
+        Total_Settled_Outstanding_Amount=('Total_Amount_Type', 'sum'), # B Column
+        Settled_Amount_Prepaid_Postpaid=('Settled_Amount_Type', 'sum'), # C Column
+        Outstanding_Amount=('Outstanding_Amount_Type', 'sum')           # D Column
+    ).reset_index()
     
-    st.success("Final Merged Payment & Outstanding Pivot Table created successfully.")
+    st.success("Final Merged Payment Pivot Table with bifurcation created successfully.")
     return pivot_table
 
 
@@ -238,7 +251,8 @@ def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_merged_pivot):
         if df_rto is not None:
             df_rto.to_excel(writer, sheet_name='RTO', index=False)
         if df_merged_pivot is not None:
-            df_merged_pivot.to_excel(writer, sheet_name='Merged_Payment_Pivot', index=False) # Sheet 4 (Final Pivot)
+            # Pivot Sheet में नए bifurcation columns शामिल होंगे
+            df_merged_pivot.to_excel(writer, sheet_name='Merged_Payment_Pivot', index=False) 
     
     processed_excel_data = output.getvalue()
     return processed_excel_data
@@ -313,7 +327,7 @@ def main():
         all_csv_objects = prepaid_objects + postpaid_objects + outstanding_objects
         
         if all_csv_objects:
-            with st.spinner("Processing all payment files and creating Merged Pivot Table..."):
+            with st.spinner("Processing all payment files and creating Merged Pivot Table with Bifurcation..."):
                 df_merged_pivot = process_combined_settlement(all_csv_objects)
         else:
             st.warning("Skipping Combined Pivot: No payment files were uploaded successfully.")
@@ -345,18 +359,18 @@ def main():
             with st.spinner("Generating Multi-Sheet Excel Workbook (Packed, RT, RTO, Merged_Payment_Pivot)..."):
                 excel_data = convert_dfs_to_excel(packed_df_merged, rt_df_merged, rto_df_merged, df_merged_pivot)
             
-            st.success("✅ Multi-sheet Excel file is ready. It contains: Packed (Sheet 1), RT (Sheet 2), RTO (Sheet 3), and Merged_Payment_Pivot (Sheet 4).")
+            st.success("✅ Multi-sheet Excel file is ready. Sheet 4: Merged_Payment_Pivot now includes Settled and Outstanding bifurcation.")
             
             st.download_button(
                 label="⬇️ Download Complete Merged Data (Excel)",
                 data=excel_data,
-                file_name='Merged_SKU_Settlement_Outstanding_Report_Final.xlsx',
+                file_name='Merged_SKU_Settlement_Outstanding_Report_Final_Bifurcated.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 key='download_excel'
             )
             st.markdown("---")
             
-            st.subheader("Preview of Merged Payment & Outstanding Pivot (Sheet 4)")
+            st.subheader("Preview of Merged Payment Pivot (Sheet 4)")
             if df_merged_pivot is not None:
                  st.dataframe(df_merged_pivot.head(10))
             else:
