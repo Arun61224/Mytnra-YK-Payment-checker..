@@ -2,10 +2,12 @@ import streamlit as st
 import pandas as pd
 import io
 import zipfile
-import os # zipfile extraction के लिए
 
-# --- फ़ंक्शन: ZIP फ़ाइल हैंडलिंग (नो चेंज) ---
-def handle_zip_upload(zip_file):
+# --- फ़ंक्शन: Packed/RT/RTO ZIP हैंडलिंग (नो चेंज) ---
+def handle_packed_rto_zip_upload(zip_file):
+    """
+    ZIP फ़ाइल को एक्सट्रैक्ट करता है और Packed, RT.., RTO.csv को StringIO ऑब्जेक्ट के रूप में वापस करता है।
+    """
     if zip_file is None:
         return None, None, None, False
 
@@ -17,9 +19,9 @@ def handle_zip_upload(zip_file):
     try:
         with zipfile.ZipFile(zip_file, 'r') as z:
             for file_name in required_files:
-                # ZIP फ़ाइल से content पढ़ने के लिए .read() का उपयोग करें
                 try:
-                    file_content = z.read(file_name).decode('utf-8')
+                    # फ़ाइल की सामग्री को पढ़ें और utf-8 में डिकोड करें
+                    file_content = z.read(file_name).decode('utf-8', errors='ignore') # errors='ignore' added for robust decoding
                     csv_data[file_name] = io.StringIO(file_content)
                 except KeyError:
                     st.error(f"Required file **{file_name}** not found in the Data ZIP archive. Please check the file name inside the ZIP.")
@@ -27,15 +29,48 @@ def handle_zip_upload(zip_file):
         
         return csv_data.get("Packed.csv"), csv_data.get("RT..csv"), csv_data.get("RTO.csv"), True
     
-    except zipfile.BadZipFile:
-        st.error("Invalid Data ZIP file uploaded. Please upload a valid .zip archive.")
-        return None, None, None, False
     except Exception as e:
         st.error(f"An error occurred during Data ZIP file extraction: {e}")
         return None, None, None, False
 
+
+# --- फ़ंक्शन: Prepaid Settlement ZIP हैंडलिंग (नया) ---
+def handle_settlement_zip(zip_file):
+    """
+    Settlement ZIP फ़ाइल को एक्सट्रैक्ट करता है और सभी CSV फ़ाइलों को list of StringIO objects के रूप में वापस करता है।
+    """
+    if zip_file is None:
+        return None
+        
+    extracted_csv_objects = []
+    st.info("Extracting files from the Settlement ZIP archive...")
+
+    try:
+        with zipfile.ZipFile(zip_file, 'r') as z:
+            # ZIP फ़ाइल में सभी फ़ाइलों को Iterate करें
+            for file_name in z.namelist():
+                # केवल .csv फ़ाइलों को Process करें और '__MACOSX' जैसी hidden files को Ignore करें
+                if file_name.lower().endswith('.csv') and not file_name.startswith('__'):
+                    st.write(f"Found CSV: {file_name}")
+                    # फ़ाइल की सामग्री को पढ़ें
+                    file_content = z.read(file_name).decode('utf-8', errors='ignore')
+                    # StringIO ऑब्जेक्ट के रूप में स्टोर करें
+                    extracted_csv_objects.append(io.StringIO(file_content))
+            
+            if not extracted_csv_objects:
+                st.error("No CSV files found inside the Settlement ZIP.")
+                return None
+            
+            return extracted_csv_objects
+            
+    except Exception as e:
+        st.error(f"An error occurred during Settlement ZIP file extraction: {e}")
+        return None
+
+
 # --- फ़ंक्शन: SKU Merger प्रोसेसिंग (नो चेंज) ---
 def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file):
+    # ... (SKU merger logic remains the same) ...
     st.subheader("1. SKU Code Merger Process")
     
     try:
@@ -60,7 +95,8 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     for file_name, file_obj, df_key in file_list:
         if file_obj is not None:
             try:
-                df = pd.read_csv(file_obj)
+                # StringIO ऑब्जेक्ट से पढ़ें
+                df = pd.read_csv(file_obj) 
                 
                 merge_column = None
                 original_sku_id_name = None
@@ -106,33 +142,40 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
-# --- फ़ंक्शन: Prepaid Settlement Pivot (नो चेंज) ---
-def process_settlement_data(settlement_files):
+
+# --- फ़ंक्शन: Prepaid Settlement Pivot (अपडेटेड to use StringIO list) ---
+def process_settlement_data(settlement_csv_objects):
+    """
+    settlement_csv_objects (list of StringIO) को पढ़ता है और Order_released_ID के आधार पर Settled_amount का pivot table बनाता है।
+    """
     st.subheader("2. Prepaid Settlement Pivot Process")
     
-    if not settlement_files:
+    if not settlement_csv_objects:
         return None
 
     all_dfs = []
     
-    for uploaded_file in settlement_files:
+    # अब यह StringIO objects की list पर Iterate करता है
+    for i, file_obj in enumerate(settlement_csv_objects):
+        file_name = f"Settlement_File_{i+1}"
         try:
-            df = pd.read_csv(uploaded_file)
+            # StringIO object को Pandas सीधे पढ़ सकता है
+            df = pd.read_csv(file_obj)
             required_cols = ['Order_released_ID', 'Settled_amount']
             df.columns = df.columns.str.strip().str.replace('"', '')
             
             if not all(col in df.columns for col in required_cols):
-                st.warning(f"File **{uploaded_file.name}** is missing required columns ({', '.join(required_cols)}). Skipping.")
+                st.warning(f"File **{file_name}** is missing required columns ({', '.join(required_cols)}). Skipping.")
                 continue
 
             df_subset = df[required_cols].copy()
             df_subset['Settled_amount'] = pd.to_numeric(df_subset['Settled_amount'], errors='coerce')
             
             all_dfs.append(df_subset)
-            st.success(f"**{uploaded_file.name}** read successfully.")
+            st.success(f"**{file_name}** read successfully.")
             
         except Exception as e:
-            st.error(f"Error reading **{uploaded_file.name}**: {e}")
+            st.error(f"Error reading **{file_name}**: {e}")
             
     if not all_dfs:
         st.error("No settlement file could be successfully processed.")
@@ -146,14 +189,13 @@ def process_settlement_data(settlement_files):
     return pivot_table
 
 
-# --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (अपडेटेड) ---
+# --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (नो चेंज) ---
 def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_pivot):
     """
     चार DataFrames को एक Excel फ़ाइल की अलग-अलग शीट्स में लिखता है (Sheet 4 पर Pivot Table)।
     """
     output = io.BytesIO()
     
-    # xlsxwriter engine का उपयोग करें
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         if df_packed is not None:
             df_packed.to_excel(writer, sheet_name='Packed', index=False) # Sheet 1
@@ -182,7 +224,7 @@ def main():
     # ----------------------------------------------------
     #                  SIDEBAR UPLOADERS
     # ----------------------------------------------------
-    st.sidebar.header("📁 Upload Files for SKU Merger")
+    st.sidebar.header("📁 1. Files for SKU Merger")
     
     seller_listings_file = st.sidebar.file_uploader(
         "Upload **Seller Listings Report.csv** (Required)", 
@@ -196,31 +238,36 @@ def main():
     )
     
     st.sidebar.markdown("---")
-    st.sidebar.header("🧾 Upload Prepaid Settlement Files")
+    st.sidebar.header("🧾 2. Prepaid Settlement Files")
     
-    settlement_files = st.sidebar.file_uploader(
-        "Upload **Prepaid Settlement CSVs** (Batch Upload)", 
-        type=['csv'],
-        accept_multiple_files=True,
-        key="settlement"
+    # नया ZIP अपलोडर
+    settlement_zip_file = st.sidebar.file_uploader(
+        "Upload **All Prepaid Settlement CSVs as a single ZIP**", 
+        type=['zip'],
+        key="settlement_zip"
     )
     
     st.markdown("---")
     
-    # Initialize pivot_df outside the if block
     pivot_df = None 
+    packed_df_merged, rt_df_merged, rto_df_merged = None, None, None
     
     if st.sidebar.button("🚀 Start All Processing"):
         
         # ----------------------------------------------------
-        #             Settlement Pivot Execution (Moved to top to get pivot_df)
+        #             Settlement Pivot Execution
         # ----------------------------------------------------
         st.header("--- Prepaid Settlement Pivot Results ---")
-        if settlement_files:
+        if settlement_zip_file:
             with st.spinner("Processing settlement files and creating Pivot Table..."):
-                pivot_df = process_settlement_data(settlement_files)
+                # ZIP फ़ाइल को हैंडल करें
+                settlement_csv_objects = handle_settlement_zip(settlement_zip_file)
+                if settlement_csv_objects:
+                    pivot_df = process_settlement_data(settlement_csv_objects)
+                else:
+                    st.error("Settlement Pivot: ZIP file extraction failed.")
         else:
-            st.warning("Skipping Settlement Pivot: No settlement files uploaded.")
+            st.warning("Skipping Settlement Pivot: No settlement ZIP file uploaded.")
         
         
         # ----------------------------------------------------
@@ -229,24 +276,22 @@ def main():
         st.header("--- SKU Code Merger Results ---")
         if seller_listings_file is None or data_zip_file is None:
             st.warning("Skipping SKU Merger: Required files not uploaded.")
-            packed_df_merged, rt_df_merged, rto_df_merged = None, None, None
         else:
-            packed_obj, rt_obj, rto_obj, success = handle_zip_upload(data_zip_file)
+            packed_obj, rt_obj, rto_obj, success = handle_packed_rto_zip_upload(data_zip_file)
             
             if success:
                 with st.spinner("Merging SKU data..."):
                     packed_df_merged, rt_df_merged, rto_df_merged = process_sku_merger(
                         packed_obj, rt_obj, rto_obj, seller_listings_file
                     )
-            else:
-                 packed_df_merged, rt_df_merged, rto_df_merged = None, None, None
-
+            
         
         # ----------------------------------------------------
         #             Final Excel Generation
         # ----------------------------------------------------
         st.header("--- 💾 Final Excel Download ---")
         
+        # जाँच करें कि कम से कम एक DataFrame मौजूद है
         if packed_df_merged is not None or rt_df_merged is not None or rto_df_merged is not None or pivot_df is not None:
             with st.spinner("Generating Multi-Sheet Excel Workbook (Packed, RT, RTO, Settlement_Pivot)..."):
                 excel_data = convert_dfs_to_excel(packed_df_merged, rt_df_merged, rto_df_merged, pivot_df)
@@ -262,7 +307,6 @@ def main():
             )
             st.markdown("---")
             
-            # प्रीव्यू
             st.subheader("Preview of Settlement Pivot (Sheet 4)")
             if pivot_df is not None:
                  st.dataframe(pivot_df.head(10))
