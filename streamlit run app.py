@@ -58,12 +58,12 @@ def handle_outstanding_csv(csv_file):
         st.error(f"An error occurred during Outstanding CSV file handling: {e}")
         return []
 
-# --- SKU Merger (नो चेंज) ---
+# --- SKU Merger (UPDATED for Cost Sheet) ---
 
-def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file):
-    # ... (SKU Merger logic remains the same) ...
+def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file, cost_sheet_file):
     st.subheader("1. SKU Code Merger Process")
     
+    # 1. Seller Listings Report Process (SKU Mapping)
     try:
         seller_df = pd.read_csv(seller_listings_file, engine='python')
         sku_map_df = seller_df[['sku id', 'sku code', 'seller sku code']].copy()
@@ -71,10 +71,52 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
         sku_map_df.rename(columns={'sku_id': 'sku_id', 'sku_code': 'sku_code', 'seller_sku_code': 'seller_sku_code'}, inplace=True)
         sku_map_df.drop_duplicates(subset=['sku_id'], inplace=True)
         sku_map_df['sku_id'] = sku_map_df['sku_id'].astype(str)
+        st.success("Seller SKU Map created.")
     except Exception as e:
         st.error(f"Seller Listings Report पढ़ने में त्रुटि या आवश्यक कॉलम नहीं मिले: {e}")
         return None, None, None
 
+    # 2. Cost Sheet Process (Cost Price Mapping)
+    cost_map_df = None
+    if cost_sheet_file is not None:
+        try:
+            # Cost Sheet में दो ही कॉलम अपेक्षित हैं: Seller SKU code and Cost price
+            cost_df = pd.read_excel(cost_sheet_file)
+            
+            # Normalize column names for matching
+            cost_df.columns = cost_df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('"', '')
+            
+            # Identify required columns
+            # We assume 'seller_sku_code' and 'cost_price' or similar normalized names are present
+            
+            # Find Seller SKU code column
+            sku_col_name = None
+            for col in cost_df.columns:
+                if 'seller_sku' in col or 'sku_code' in col:
+                    sku_col_name = col
+                    break
+
+            # Find Cost Price column
+            cost_col_name = None
+            for col in cost_df.columns:
+                if 'cost_price' in col or 'cost' == col or 'price' == col:
+                    cost_col_name = col
+                    break
+            
+            if sku_col_name and cost_col_name:
+                cost_map_df = cost_df[[sku_col_name, cost_col_name]].copy()
+                cost_map_df.columns = ['seller_sku_code', 'Cost_Price']
+                cost_map_df['seller_sku_code'] = cost_map_df['seller_sku_code'].astype(str)
+                cost_map_df['Cost_Price'] = pd.to_numeric(cost_map_df['Cost_Price'], errors='coerce').fillna(0)
+                cost_map_df.drop_duplicates(subset=['seller_sku_code'], keep='first', inplace=True)
+                st.success("Cost Price Map created successfully.")
+            else:
+                st.warning("Cost Sheet में आवश्यक कॉलम 'Seller SKU Code' या 'Cost Price' नहीं मिले। Cost Price मैप नहीं किया जाएगा।")
+        except Exception as e:
+            st.error(f"Error reading or processing Cost Sheet: {e}")
+
+
+    # 3. Merging DataFrames (SKU Map + Cost Map)
     file_list = [
         ("Packed.csv", packed_file_obj, 'packed_df'),
         ("RT..csv", rt_file_obj, 'rt_df'),
@@ -88,9 +130,9 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
             try:
                 df = pd.read_csv(file_obj)
                 
+                # --- Step 3a: Merge SKU ID to get Seller SKU Code ---
                 merge_column = None
                 original_sku_id_name = None
-                
                 if 'sku_id' in df.columns:
                     merge_column = 'sku_id'
                     original_sku_id_name = 'sku_id'
@@ -107,20 +149,49 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
                 df[merge_column] = df[merge_column].astype(str)
                 merged_df = pd.merge(df, sku_map_df, on=merge_column, how='left')
                 
+                # Handling missing SKU data
                 merged_df['seller_sku_code'] = merged_df['seller_sku_code'].fillna('Not Found')
                 merged_df['sku_code'] = merged_df['sku_code'].fillna('Not Found')
 
+                # Reordering columns
                 sku_id_index = merged_df.columns.get_loc('sku_id')
-                
                 seller_sku_col = merged_df.pop('seller_sku_code')
                 sku_code_col = merged_df.pop('sku_code')
-                
                 merged_df.insert(sku_id_index + 1, 'seller_sku_code', seller_sku_col)
                 merged_df.insert(sku_id_index + 2, 'sku_code', sku_code_col)
-
+                
                 if original_sku_id_name == 'sku id':
                     merged_df.rename(columns={'sku_id': 'sku id'}, inplace=True)
-                
+
+                # --- Step 3b: Merge Cost Price using Seller SKU Code (NEW) ---
+                if cost_map_df is not None:
+                    # Rename the column temporarily for merging based on seller sku code
+                    df_for_cost_merge = merged_df.rename(columns={'seller sku code': 'seller_sku_code', 'seller sku code ': 'seller_sku_code'})
+                    
+                    # Ensure seller_sku_code is string for robust merging
+                    df_for_cost_merge['seller_sku_code'] = df_for_cost_merge['seller_sku_code'].astype(str)
+                    
+                    merged_df = pd.merge(
+                        df_for_cost_merge, 
+                        cost_map_df[['seller_sku_code', 'Cost_Price']], 
+                        on='seller_sku_code', 
+                        how='left'
+                    )
+                    
+                    # Fill missing Cost Price with 0 or 'Not Found'
+                    merged_df['Cost_Price'] = merged_df['Cost_Price'].fillna(0.0)
+                    
+                    # Reorder the Cost Price column next to Seller SKU Code
+                    try:
+                        seller_sku_index = merged_df.columns.get_loc('seller_sku_code')
+                        cost_col = merged_df.pop('Cost_Price')
+                        merged_df.insert(seller_sku_index + 1, 'Cost_Price', cost_col)
+                    except KeyError:
+                         # Use the column name that actually exists if it was renamed back
+                         pass
+                    
+                    st.success(f"**{file_name}** successfully merged with Cost Prices.")
+
                 processed_dfs[df_key] = merged_df
                 st.success(f"**{file_name}** successfully processed.")
 
@@ -132,13 +203,10 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
-# --- फ़ंक्शन: कंबाइंड सेटलमेंट Pivot Processor (UPDATED for Bifurcation) ---
+# --- Combined Settlement Pivot Processor (नो चेंज) ---
 
 def process_combined_settlement(all_csv_objects):
-    """
-    सभी Prepaid, Postpaid, और Outstanding data को पढ़ता है और Merged Pivot Table
-    को Settled और Outstanding अमाउंट के Bifurcation के साथ बनाता है।
-    """
+    # ... (Logic remains the same as the previous response) ...
     st.subheader("2. Combined Settlement & Outstanding Pivot")
     
     if not all_csv_objects:
@@ -147,14 +215,10 @@ def process_combined_settlement(all_csv_objects):
 
     all_dfs = []
     
-    # अपेक्षित कॉलम नाम
     TARGET_COL_ID = 'order_release_id'
-    
-    # दो संभावित राशि कॉलम
     TARGET_COL_AMOUNT_SETTLED = 'Settled_Amount'
     TARGET_COL_AMOUNT_UNSETTLED = 'Unsettled_Amount'
     
-    # Normalized मैचिंग स्ट्रिंग्स
     MATCH_IDS = ['orderreleaseid', 'releaseid']
     MATCH_SETTLED = TARGET_COL_AMOUNT_SETTLED.lower().replace('_', '')
     MATCH_UNSETTLED = TARGET_COL_AMOUNT_UNSETTLED.lower().replace('_', '')
@@ -173,11 +237,9 @@ def process_combined_settlement(all_csv_objects):
 
             for original_name, norm_name in normalized_cols.items():
                 
-                # ID Column Finder
                 if norm_name in MATCH_IDS and found_id_name is None:
                     found_id_name = original_name
                 
-                # Amount Column Finder: Settled has priority, then Unsettled
                 if norm_name == MATCH_SETTLED:
                     found_amount_name = original_name
                     amount_type = 'Settled'
@@ -189,27 +251,22 @@ def process_combined_settlement(all_csv_objects):
                 st.error(f"File **{file_name}** is missing required ID or Amount columns. Skipping.")
                 continue
 
-            # केवल आवश्यक कॉलम चुनें और अमाउंट टाइप (Settled/Unsettled) को ट्रैक करें
             df_subset = df[[found_id_name, found_amount_name]].copy()
             
-            # कॉलम को अपेक्षित नाम दें
             df_subset.rename(columns={
                 found_id_name: TARGET_COL_ID, 
                 found_amount_name: 'Amount_Value'
             }, inplace=True)
             
-            # Amount Value को numeric में बदलें 
             df_subset['Amount_Value'] = pd.to_numeric(df_subset['Amount_Value'], errors='coerce')
             
-            # Bifurcation के लिए कॉलम जोड़ें
             if amount_type == 'Settled':
                 df_subset['Settled_Amount_Type'] = df_subset['Amount_Value']
                 df_subset['Outstanding_Amount_Type'] = 0.0
-            else: # amount_type == 'Unsettled'
+            else:
                 df_subset['Settled_Amount_Type'] = 0.0
                 df_subset['Outstanding_Amount_Type'] = df_subset['Amount_Value']
             
-            # Merged Amount (Total)
             df_subset['Total_Amount_Type'] = df_subset['Amount_Value']
             
             all_dfs.append(df_subset)
@@ -224,11 +281,10 @@ def process_combined_settlement(all_csv_objects):
         
     combined_df = pd.concat(all_dfs, ignore_index=True)
     
-    # Final Pivot Table बनाएँ
     pivot_table = combined_df.groupby(TARGET_COL_ID).agg(
-        Total_Settled_Outstanding_Amount=('Total_Amount_Type', 'sum'), # B Column
-        Settled_Amount_Prepaid_Postpaid=('Settled_Amount_Type', 'sum'), # C Column
-        Outstanding_Amount=('Outstanding_Amount_Type', 'sum')           # D Column
+        Total_Settled_Outstanding_Amount=('Total_Amount_Type', 'sum'),
+        Settled_Amount_Prepaid_Postpaid=('Settled_Amount_Type', 'sum'),
+        Outstanding_Amount=('Outstanding_Amount_Type', 'sum')
     ).reset_index()
     
     st.success("Final Merged Payment Pivot Table with bifurcation created successfully.")
@@ -238,9 +294,7 @@ def process_combined_settlement(all_csv_objects):
 # --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (नो चेंज) ---
 
 def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_merged_pivot):
-    """
-    चार DataFrames को एक Excel फ़ाइल की अलग-अलग शीट्स में लिखता है (Sheet 4 पर Merged Pivot Table)।
-    """
+    """चार DataFrames को एक Excel फ़ाइल की अलग-अलग शीट्स में लिखता है।"""
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -251,14 +305,13 @@ def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_merged_pivot):
         if df_rto is not None:
             df_rto.to_excel(writer, sheet_name='RTO', index=False)
         if df_merged_pivot is not None:
-            # Pivot Sheet में नए bifurcation columns शामिल होंगे
             df_merged_pivot.to_excel(writer, sheet_name='Merged_Payment_Pivot', index=False) 
     
     processed_excel_data = output.getvalue()
     return processed_excel_data
 
 
-# --- Streamlit डैशबोर्ड लेआउट (नो चेंज) ---
+# --- Streamlit डैशबोर्ड लेआउट (UPDATED) ---
 
 def main():
     st.set_page_config(
@@ -267,16 +320,16 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    st.title("🛍️ SKU & Settlement Data Processor")
+    st.title("🛍️ SKU, Cost & Settlement Data Processor")
     st.markdown("---")
     
     # ----------------------------------------------------
     #                  SIDEBAR UPLOADERS
     # ----------------------------------------------------
-    st.sidebar.header("📁 1. Files for SKU Merger")
+    st.sidebar.header("📁 1. Files for SKU & Cost Merger")
     
     seller_listings_file = st.sidebar.file_uploader(
-        "Upload **Seller Listings Report.csv** (Required)", 
+        "Upload **Seller Listings Report.csv** (Required for SKU Merger)", 
         type=['csv'],
         key="seller"
     )
@@ -284,6 +337,13 @@ def main():
         "Upload **Packed, RT, RTO files as a ZIP**", 
         type=['zip'],
         key="data_zip"
+    )
+    
+    # New Cost Sheet Uploader
+    cost_sheet_file = st.sidebar.file_uploader(
+        "Upload **Cost Sheet (Excel/CSV)** (Optional for Cost Price)", 
+        type=['xlsx', 'csv'],
+        key="cost_sheet"
     )
     
     st.sidebar.markdown("---")
@@ -315,6 +375,22 @@ def main():
     if st.sidebar.button("🚀 Start All Processing"):
         
         # ----------------------------------------------------
+        #                  SKU & Cost Merger Execution
+        # ----------------------------------------------------
+        st.header("--- SKU Code & Cost Price Merger Results ---")
+        if seller_listings_file is None or data_zip_file is None:
+            st.warning("Skipping SKU Merger: Required files not uploaded.")
+            packed_df_merged, rt_df_merged, rto_df_merged = None, None, None
+        else:
+            packed_obj, rt_obj, rto_obj, success = handle_packed_rto_zip_upload(data_zip_file)
+            
+            if success:
+                with st.spinner("Merging SKU and Cost data..."):
+                    packed_df_merged, rt_df_merged, rto_df_merged = process_sku_merger(
+                        packed_obj, rt_obj, rto_obj, seller_listings_file, cost_sheet_file
+                    )
+            
+        # ----------------------------------------------------
         #             Combined Payment Execution
         # ----------------------------------------------------
         
@@ -334,47 +410,32 @@ def main():
 
         
         # ----------------------------------------------------
-        #                  SKU Merger Execution
-        # ----------------------------------------------------
-        st.header("--- SKU Code Merger Results ---")
-        if seller_listings_file is None or data_zip_file is None:
-            st.warning("Skipping SKU Merger: Required files not uploaded.")
-            packed_df_merged, rt_df_merged, rto_df_merged = None, None, None
-        else:
-            packed_obj, rt_obj, rto_obj, success = handle_packed_rto_zip_upload(data_zip_file)
-            
-            if success:
-                with st.spinner("Merging SKU data..."):
-                    packed_df_merged, rt_df_merged, rto_df_merged = process_sku_merger(
-                        packed_obj, rt_obj, rto_obj, seller_listings_file
-                    )
-            
-        
-        # ----------------------------------------------------
         #             Final Excel Generation
         # ----------------------------------------------------
         st.header("--- 💾 Final Excel Download ---")
         
-        if packed_df_merged is not None or rt_df_merged is not None or rto_df_merged is not None or df_merged_pivot is not None:
-            with st.spinner("Generating Multi-Sheet Excel Workbook (Packed, RT, RTO, Merged_Payment_Pivot)..."):
+        if packed_df_merged is not None or df_merged_pivot is not None:
+            with st.spinner("Generating Multi-Sheet Excel Workbook..."):
                 excel_data = convert_dfs_to_excel(packed_df_merged, rt_df_merged, rto_df_merged, df_merged_pivot)
             
-            st.success("✅ Multi-sheet Excel file is ready. Sheet 4: Merged_Payment_Pivot now includes Settled and Outstanding bifurcation.")
+            st.success("✅ Multi-sheet Excel file is ready. All SKU data now includes Cost Price.")
             
             st.download_button(
                 label="⬇️ Download Complete Merged Data (Excel)",
                 data=excel_data,
-                file_name='Merged_SKU_Settlement_Outstanding_Report_Final_Bifurcated.xlsx',
+                file_name='Merged_SKU_Cost_Settlement_Report_Final.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 key='download_excel'
             )
             st.markdown("---")
             
+            st.subheader("Preview of Packed Sheet (with Cost Price)")
+            if packed_df_merged is not None:
+                 st.dataframe(packed_df_merged[['sku id', 'seller sku code', 'Cost_Price']].head(10))
+            
             st.subheader("Preview of Merged Payment Pivot (Sheet 4)")
             if df_merged_pivot is not None:
                  st.dataframe(df_merged_pivot.head(10))
-            else:
-                st.info("Merged Payment & Outstanding Pivot data was not generated.")
 
         else:
             st.error("No data files could be processed successfully to generate the final Excel report.")
