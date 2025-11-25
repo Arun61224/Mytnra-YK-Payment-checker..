@@ -29,7 +29,7 @@ def handle_packed_rto_zip_upload(zip_file):
 def handle_settlement_zip(zip_file, process_name):
     """Settlement ZIP फ़ाइल को एक्सट्रैक्ट करता है और सभी CSV फ़ाइलों को list of StringIO objects के रूप में वापस करता है।"""
     if zip_file is None:
-        return None
+        return []
     extracted_csv_objects = []
     st.info(f"Extracting files from the {process_name} ZIP archive...")
     try:
@@ -40,17 +40,17 @@ def handle_settlement_zip(zip_file, process_name):
                     file_content = z.read(file_name).decode('utf-8', errors='ignore')
                     extracted_csv_objects.append(io.StringIO(file_content))
             if not extracted_csv_objects:
-                st.error(f"No CSV files found inside the {process_name} ZIP.")
-                return None
+                st.warning(f"No CSV files found inside the {process_name} ZIP.")
+                return []
             return extracted_csv_objects
     except Exception as e:
         st.error(f"An error occurred during {process_name} ZIP file extraction: {e}")
-        return None
+        return []
 
 # --- SKU Merger (नो चेंज) ---
 
 def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file):
-    # ... (Logic remains the same as previous response) ...
+    # ... (Logic remains the same) ...
     st.subheader("1. SKU Code Merger Process")
     
     try:
@@ -121,17 +121,16 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
+# --- फ़ंक्शन: कंबाइंड सेटलमेंट Pivot Processor (नया लॉजिक) ---
 
-# --- फ़ंक्शन: Settlement Pivot Processor (Prepaid and Postpaid दोनों के लिए उपयोग होगा) ---
-
-def process_settlement_pivot(settlement_csv_objects, pivot_type):
+def process_combined_settlement(all_settlement_csv_objects):
     """
-    Settlement data को Process करता है और Order ID के आधार पर Settled Amount का Pivot Table बनाता है।
-    'pivot_type' (Prepaid या Postpaid) के आधार पर Subheader सेट करता है।
+    सभी Prepaid और Postpaid Settlement data को पढ़ता है और एक Final Merged Pivot Table बनाता है।
     """
-    st.subheader(f"2. {pivot_type} Settlement Pivot Process")
+    st.subheader("2. Combined Settlement Pivot (Merged Payment)")
     
-    if not settlement_csv_objects:
+    if not all_settlement_csv_objects:
+        st.warning("No Prepaid or Postpaid settlement files were uploaded or extracted successfully.")
         return None
 
     all_dfs = []
@@ -144,15 +143,14 @@ def process_settlement_pivot(settlement_csv_objects, pivot_type):
     MATCH_ID = TARGET_COL_ID.lower().replace('_', '')
     MATCH_AMOUNT = TARGET_COL_AMOUNT.lower().replace('_', '')
 
-    for i, file_obj in enumerate(settlement_csv_objects):
-        file_name = f"{pivot_type}_Settlement_File_{i+1}"
+    for i, file_obj in enumerate(all_settlement_csv_objects):
+        file_name = f"Combined_Settlement_File_{i+1}"
         try:
             df = pd.read_csv(file_obj)
             
             # कॉलम नामों को Normalize करें: Lowercase + Spaces/Quotes हटाएँ
             normalized_cols = {col: col.strip().replace('"', '').lower().replace('_', '') for col in df.columns}
             
-            # फ़ाइल के कॉलम नामों में TARGET कॉलम को खोजें
             found_id_name = None
             found_amount_name = None
 
@@ -163,13 +161,13 @@ def process_settlement_pivot(settlement_csv_objects, pivot_type):
                     found_amount_name = original_name
             
             if not found_id_name or not found_amount_name:
-                st.error(f"File **{file_name}** is missing required columns. Expected '{TARGET_COL_ID}' and '{TARGET_COL_AMOUNT}'.")
+                st.error(f"File **{file_name}** is missing required columns. Expected '{TARGET_COL_ID}' and '{TARGET_COL_AMOUNT}'. Skipping.")
                 continue
 
             # केवल आवश्यक कॉलम चुनें
             df_subset = df[[found_id_name, found_amount_name]].copy()
             
-            # कॉलम को अपेक्षित नाम दें ताकि Pivot Table सही से बन सके
+            # कॉलम को अपेक्षित नाम दें
             df_subset.rename(columns={
                 found_id_name: TARGET_COL_ID, 
                 found_amount_name: TARGET_COL_AMOUNT
@@ -185,24 +183,24 @@ def process_settlement_pivot(settlement_csv_objects, pivot_type):
             st.error(f"Error reading **{file_name}**: {e}")
             
     if not all_dfs:
-        st.error(f"No {pivot_type} settlement file could be successfully processed.")
+        st.error("No combined settlement data could be processed successfully.")
         return None
         
     combined_df = pd.concat(all_dfs, ignore_index=True)
     
-    # Pivot Table बनाएँ
+    # Final Pivot Table बनाएँ (Prepaid + Postpaid डेटा को मिलाकर)
     pivot_table = combined_df.groupby(TARGET_COL_ID)[TARGET_COL_AMOUNT].sum().reset_index()
     pivot_table.rename(columns={TARGET_COL_AMOUNT: 'Total_Settled_Amount'}, inplace=True)
     
-    st.success(f"{pivot_type} Pivot Table created successfully.")
+    st.success("Final Merged Payment Pivot Table created successfully.")
     return pivot_table
 
 
 # --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (अपडेटेड) ---
 
-def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_prepaid_pivot, df_postpaid_pivot):
+def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_merged_pivot):
     """
-    पांच DataFrames को एक Excel फ़ाइल की अलग-अलग शीट्स में लिखता है।
+    चार DataFrames को एक Excel फ़ाइल की अलग-अलग शीट्स में लिखता है (Sheet 4 पर Merged Pivot Table)।
     """
     output = io.BytesIO()
     
@@ -213,10 +211,8 @@ def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_prepaid_pivot, df_postpaid
             df_rt.to_excel(writer, sheet_name='RT', index=False)         # Sheet 2
         if df_rto is not None:
             df_rto.to_excel(writer, sheet_name='RTO', index=False)       # Sheet 3
-        if df_prepaid_pivot is not None:
-            df_prepaid_pivot.to_excel(writer, sheet_name='Prepaid_Pivot', index=False) # Sheet 4
-        if df_postpaid_pivot is not None:
-            df_postpaid_pivot.to_excel(writer, sheet_name='Postpaid_Pivot', index=False) # Sheet 5 (NEW)
+        if df_merged_pivot is not None:
+            df_merged_pivot.to_excel(writer, sheet_name='Merged_Payment_Pivot', index=False) # Sheet 4 (Final Pivot)
     
     processed_excel_data = output.getvalue()
     return processed_excel_data
@@ -251,16 +247,13 @@ def main():
     )
     
     st.sidebar.markdown("---")
-    st.sidebar.header("🧾 2. Prepaid Settlement Files")
+    st.sidebar.header("🧾 2. Settlement Files (Prepaid & Postpaid)")
     
     prepaid_zip_file = st.sidebar.file_uploader(
         "Upload **Prepaid Settlement CSVs as a single ZIP**", 
         type=['zip'],
         key="prepaid_zip"
     )
-    
-    st.sidebar.markdown("---")
-    st.sidebar.header("💳 3. Postpaid Settlement Files (New)")
     
     postpaid_zip_file = st.sidebar.file_uploader(
         "Upload **Postpaid Settlement CSVs as a single ZIP**", 
@@ -270,40 +263,29 @@ def main():
     
     st.markdown("---")
     
-    df_prepaid_pivot = None 
-    df_postpaid_pivot = None
+    df_merged_pivot = None 
     packed_df_merged, rt_df_merged, rto_df_merged = None, None, None
     
     if st.sidebar.button("🚀 Start All Processing"):
         
         # ----------------------------------------------------
-        #             Settlement Pivot Execution
+        #             Combined Settlement Execution
         # ----------------------------------------------------
         
-        # --- Prepaid ---
-        st.header("--- Prepaid Settlement Pivot Results ---")
-        if prepaid_zip_file:
-            with st.spinner("Processing Prepaid settlement files and creating Pivot Table..."):
-                settlement_csv_objects = handle_settlement_zip(prepaid_zip_file, "Prepaid")
-                if settlement_csv_objects:
-                    df_prepaid_pivot = process_settlement_pivot(settlement_csv_objects, "Prepaid")
-                else:
-                    st.error("Prepaid Settlement Pivot: ZIP file extraction failed.")
-        else:
-            st.warning("Skipping Prepaid Settlement Pivot: No Prepaid ZIP file uploaded.")
-
-        # --- Postpaid (NEW) ---
-        st.header("--- Postpaid Settlement Pivot Results ---")
-        if postpaid_zip_file:
-            with st.spinner("Processing Postpaid settlement files and creating Pivot Table..."):
-                settlement_csv_objects = handle_settlement_zip(postpaid_zip_file, "Postpaid")
-                if settlement_csv_objects:
-                    df_postpaid_pivot = process_settlement_pivot(settlement_csv_objects, "Postpaid")
-                else:
-                    st.error("Postpaid Settlement Pivot: ZIP file extraction failed.")
-        else:
-            st.warning("Skipping Postpaid Settlement Pivot: No Postpaid ZIP file uploaded.")
+        st.header("--- Combined Payment Pivot Results ---")
         
+        # दोनों ZIP से CSV objects इकट्ठा करें
+        prepaid_objects = handle_settlement_zip(prepaid_zip_file, "Prepaid")
+        postpaid_objects = handle_settlement_zip(postpaid_zip_file, "Postpaid")
+        
+        all_settlement_csv_objects = prepaid_objects + postpaid_objects
+        
+        if all_settlement_csv_objects:
+            with st.spinner("Processing combined settlement files and creating Merged Pivot Table..."):
+                df_merged_pivot = process_combined_settlement(all_settlement_csv_objects)
+        else:
+            st.warning("Skipping Combined Pivot: No settlement files were uploaded successfully.")
+
         
         # ----------------------------------------------------
         #                  SKU Merger Execution
@@ -327,26 +309,26 @@ def main():
         # ----------------------------------------------------
         st.header("--- 💾 Final Excel Download ---")
         
-        if packed_df_merged is not None or rt_df_merged is not None or rto_df_merged is not None or df_prepaid_pivot is not None or df_postpaid_pivot is not None:
-            with st.spinner("Generating Multi-Sheet Excel Workbook (Packed, RT, RTO, Prepaid_Pivot, Postpaid_Pivot)..."):
-                excel_data = convert_dfs_to_excel(packed_df_merged, rt_df_merged, rto_df_merged, df_prepaid_pivot, df_postpaid_pivot)
+        if packed_df_merged is not None or rt_df_merged is not None or rto_df_merged is not None or df_merged_pivot is not None:
+            with st.spinner("Generating Multi-Sheet Excel Workbook (Packed, RT, RTO, Merged_Payment_Pivot)..."):
+                excel_data = convert_dfs_to_excel(packed_df_merged, rt_df_merged, rto_df_merged, df_merged_pivot)
             
-            st.success("✅ Multi-sheet Excel file is ready. It contains: Packed, RT, RTO, Prepaid_Pivot (Sheet 4), and Postpaid_Pivot (Sheet 5).")
+            st.success("✅ Multi-sheet Excel file is ready. It contains: Packed (Sheet 1), RT (Sheet 2), RTO (Sheet 3), and Merged_Payment_Pivot (Sheet 4).")
             
             st.download_button(
                 label="⬇️ Download Complete Merged Data (Excel)",
                 data=excel_data,
-                file_name='Merged_SKU_Settlement_Report_Complete.xlsx',
+                file_name='Merged_SKU_Settlement_Report_Final.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 key='download_excel'
             )
             st.markdown("---")
             
-            st.subheader("Preview of Postpaid Pivot (Sheet 5)")
-            if df_postpaid_pivot is not None:
-                 st.dataframe(df_postpaid_pivot.head(10))
+            st.subheader("Preview of Merged Payment Pivot (Sheet 4)")
+            if df_merged_pivot is not None:
+                 st.dataframe(df_merged_pivot.head(10))
             else:
-                st.info("Postpaid Pivot data was not generated.")
+                st.info("Merged Payment Pivot data was not generated.")
 
         else:
             st.error("No data files could be processed successfully to generate the final Excel report.")
