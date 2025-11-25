@@ -62,11 +62,11 @@ def handle_outstanding_csv(csv_file):
         return []
         
 # ---------------------------------------------------------------------------------
-# --- SKU Merger (Logic remains the same, focusing on Packed DF) ---
+# --- MODIFIED: SKU Merger (Invoice Logic REMOVED) ---
 # ---------------------------------------------------------------------------------
 
-def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file, cost_sheet_file, sales_b2c_file):
-    st.subheader("1. SKU Code, Cost Price & Invoice Merger Process")
+def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file, cost_sheet_file):
+    st.subheader("1. SKU Code & Cost Price Merger Process")
     
     # --- 1. Seller Listings Report Process (SKU Mapping) ---
     try:
@@ -102,27 +102,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
         except Exception as e:
             st.error(f"Error reading or processing Cost Sheet: {e}")
 
-    # --- 3. B2C Sales Report Process (Invoice Mapping) ---
-    invoice_map_df = None
-    if sales_b2c_file is not None:
-        try:
-            invoice_df = pd.read_excel(sales_b2c_file) if sales_b2c_file.name.endswith('.xlsx') else pd.read_csv(sales_b2c_file)
-            invoice_df.columns = invoice_df.columns.str.strip().str.replace('"', '')
-            order_id_col = "Sale_Order_Code"
-            invoice_col = "Invoice_Number"
-            
-            if order_id_col in invoice_df.columns and invoice_col in invoice_df.columns:
-                invoice_map_df = invoice_df[[order_id_col, invoice_col]].copy()
-                invoice_map_df.rename(columns={order_id_col: 'Order_ID_For_Mapping', invoice_col: 'Invoice_Number'}, inplace=True)
-                invoice_map_df['Order_ID_For_Mapping'] = invoice_map_df['Order_ID_For_Mapping'].astype(str)
-                invoice_map_df.drop_duplicates(subset=['Order_ID_For_Mapping'], keep='first', inplace=True)
-                st.success("B2C Sales Report (Invoice Map) created successfully.")
-            else:
-                st.warning(f"B2C Sales Report में आवश्यक कॉलम '{order_id_col}' या '{invoice_col}' नहीं मिले। Invoice Number मैप नहीं किया जाएगा।")
-        except Exception as e:
-            st.error(f"Error reading or processing B2C Sales Report: {e}")
-
-    # --- 4. Merging DataFrames ---
+    # --- 3. Merging DataFrames ---
     file_list = [
         ("Packed.csv", packed_file_obj, 'packed_df', ['order_id']),
         ("RT..csv", rt_file_obj, 'rt_df', ['old_parent_order_id']),
@@ -141,7 +121,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
             try:
                 df = pd.read_csv(file_obj)
                 
-                # --- Step 4a: Merge SKU ID to get Seller SKU Code ---
+                # --- Step 3a: Merge SKU ID to get Seller SKU Code ---
                 merge_column = next((col for col in ['sku_id', 'sku id'] if col in df.columns), None)
                 if merge_column:
                     original_sku_id_name = merge_column
@@ -159,7 +139,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
                      merged_df = df
                      st.warning(f"**{file_name}**: SKU ID column not found, skipping SKU merger.")
 
-                # --- Step 4b: Merge Cost Price using Seller SKU Code ---
+                # --- Step 3b: Merge Cost Price using Seller SKU Code ---
                 if cost_map_df is not None:
                     sku_col_in_df = 'seller_sku_code'
                     
@@ -180,27 +160,8 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
                         st.warning(f"**{file_name}**: 'seller_sku_code' column not found, skipping Cost merger.")
 
 
-                # --- Step 4c: Merge Invoice Number using Order ID ---
-                if invoice_map_df is not None:
-                    merge_col_in_df = next((col for col in order_id_cols if col in merged_df.columns), None)
-                    
-                    if merge_col_in_df:
-                        temp_df = merged_df.rename(columns={merge_col_in_df: 'Order_ID_For_Mapping'})
-                        temp_df['Order_ID_For_Mapping'] = temp_df['Order_ID_For_Mapping'].astype(str)
-                        
-                        final_df = pd.merge(
-                            temp_df,
-                            invoice_map_df[['Order_ID_For_Mapping', 'Invoice_Number']],
-                            on='Order_ID_For_Mapping',
-                            how='left'
-                        )
-                        final_df['Invoice_Number'] = final_df['Invoice_Number'].fillna('Not Found')
-                        final_df.rename(columns={'Order_ID_For_Mapping': merge_col_in_df}, inplace=True)
-                        merged_df = final_df
-
-                        st.success(f"**{file_name}** successfully merged with Invoice Numbers.")
-                    else:
-                        st.warning(f"**{file_name}**: Suitable Order ID column not found for Invoice mapping.")
+                # --- Step 3c: Invoice Number Merge is REMOVED ---
+                # Invoice mapping logic removed as per user request.
                 
                 processed_dfs[df_key] = merged_df
                 st.success(f"**{file_name}** successfully processed.")
@@ -214,7 +175,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
 # ---------------------------------------------------------------------------------
-# --- Combined Settlement Pivot Processor (Numeric Conversion retained) ---
+# --- Combined Settlement Pivot Processor (NO CHANGE) ---
 # ---------------------------------------------------------------------------------
 
 def process_combined_settlement(all_csv_objects):
@@ -325,7 +286,7 @@ def process_combined_settlement(all_csv_objects):
     return pivot_table
 
 # ---------------------------------------------------------------------------------
-# --- MODIFIED: Create Final Report Sheet (Added Safe String Conversion for Merge) ---
+# --- Create Final Report Sheet (NO CHANGE) ---
 # ---------------------------------------------------------------------------------
 
 def create_final_packed_sheet(packed_df, payment_pivot_df):
@@ -353,11 +314,7 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
     if payment_pivot_df is not None:
         
         # --- SAFE MERGE KEY CONVERSION (Force String for Merge Compatibility) ---
-        # IDs को मर्ज करने से पहले हमेशा clean string में बदल दें, चाहे वे बाद में Int64 हों या नहीं।
         packed_df['order_id'] = packed_df['order_id'].astype(str).str.strip().fillna('NO_PACKED_ID')
-        
-        # pivot_table का order_id पहले ही process_combined_settlement में Int64 या clean string बन चुका है
-        # हम यहाँ इसे string में force करते हैं, ताकि merge 100% सुरक्षित हो
         payment_pivot_df['order_id'] = payment_pivot_df['order_id'].astype(str).str.strip().fillna('NO_PIVOT_ID')
         
         st.info("Ensuring 'order_id' is clean string format for safe merging.")
@@ -447,21 +404,22 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
     st.success("Final Packed Report sheet created. Check the bottom right of the table for payment columns.")
     return final_report_df
 
-# --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (NO CHANGE) ---
+# ---------------------------------------------------------------------------------
+# --- Multi-Sheet Excel Downloader (Only Final_Report and Payment_Pivot) (NO CHANGE) ---
 
 def convert_dataframes_to_excel(df_packed, df_rt, df_rto, df_merged_pivot, df_final_report):
-    """DataFrames को एक Excel फ़ाइल की अलग-अलग शीट्स में लिखता है।"""
+    """DataFrames को एक Excel फ़ाइल की अलग-अलग शीट्स में लिखता है। केवल Final_Report और Payment_Pivot को शामिल करता है।"""
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         if df_final_report is not None:
             df_final_report.to_excel(writer, sheet_name='Final_Report', index=False)
-        if df_packed is not None:
-            df_packed.to_excel(writer, sheet_name='Packed_Merged', index=False)
-        if df_rt is not None:
-            df_rt.to_excel(writer, sheet_name='RT_Merged', index=False)
-        if df_rto is not None:
-            df_rto.to_excel(writer, sheet_name='RTO_Merged', index=False)
+        
+        # Packed, RT, RTO sheets are now ignored as per user request.
+        # if df_packed is not None: df_packed.to_excel(writer, sheet_name='Packed_Merged', index=False)
+        # if df_rt is not None: df_rt.to_excel(writer, sheet_name='RT_Merged', index=False)
+        # if df_rto is not None: df_rto.to_excel(writer, sheet_name='RTO_Merged', index=False)
+
         if df_merged_pivot is not None:
             df_merged_pivot.to_excel(writer, sheet_name='Payment_Pivot', index=False) 
     
@@ -469,7 +427,7 @@ def convert_dataframes_to_excel(df_packed, df_rt, df_rto, df_merged_pivot, df_fi
     return processed_excel_data
 
 
-# --- Streamlit डैशबोर्ड लेआउट (NO CHANGE) ---
+# --- MODIFIED: Streamlit डैशबोर्ड लेआउट (Invoice Uploader REMOVED) ---
 
 def main():
     st.set_page_config(
@@ -484,7 +442,7 @@ def main():
     # ----------------------------------------------------
     #                  SIDEBAR UPLOADERS 
     # ----------------------------------------------------
-    st.sidebar.header("📁 1. Files for SKU, Cost & Invoice Merger")
+    st.sidebar.header("📁 1. Files for SKU & Cost Merger") # Header Updated
     
     seller_listings_file = st.sidebar.file_uploader(
         "Upload **Seller Listings Report.csv** (Required for SKU Merger)", 
@@ -503,11 +461,7 @@ def main():
         key="cost_sheet"
     )
 
-    sales_b2c_file = st.sidebar.file_uploader(
-        "Upload **B2C Sales Report (Invoice Mapping)** (Optional for Invoice)", 
-        type=['xlsx', 'csv'],
-        key="sales_b2c_file"
-    )
+    # sales_b2c_file (Invoice Mapping) Uploader is REMOVED
     
     st.sidebar.markdown("---")
     st.sidebar.header("🧾 2. Payment Files (Settled & Outstanding)")
@@ -558,18 +512,19 @@ def main():
 
         
         # ----------------------------------------------------
-        #                  2. SKU, Cost & Invoice Merger Execution (Only Packed)
+        #                  2. SKU & Cost Merger Execution (Only Packed)
         # ----------------------------------------------------
-        st.header("--- SKU Code, Cost Price & Invoice Merger Results ---")
+        st.header("--- SKU Code & Cost Price Merger Results ---") # Header Updated
         if seller_listings_file is None or data_zip_file is None:
             st.warning("Skipping SKU Merger: Required files not uploaded.")
         else:
             packed_obj, rt_obj, rto_obj, success = handle_packed_rto_zip_upload(data_zip_file)
             
             if success:
-                with st.spinner("Merging SKU, Cost and Invoice data into Packed Sheet..."):
+                with st.spinner("Merging SKU and Cost data into Packed Sheet..."):
+                    # NOTE: Removed sales_b2c_file argument
                     packed_df_merged, rt_df_merged, rto_df_merged = process_sku_merger(
-                        packed_obj, rt_obj, rto_obj, seller_listings_file, cost_sheet_file, sales_b2c_file
+                        packed_obj, rt_obj, rto_obj, seller_listings_file, cost_sheet_file
                     )
             
         # ----------------------------------------------------
