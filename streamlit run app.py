@@ -76,7 +76,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
         st.error(f"Seller Listings Report पढ़ने में त्रुटि या आवश्यक कॉलम नहीं मिले: {e}")
         return None, None, None
 
-    # --- 2. Cost Sheet Process (Cost Price Mapping - FIXED LOGIC) ---
+    # --- 2. Cost Sheet Process (Cost Price Mapping) ---
     cost_map_df = None
     if cost_sheet_file is not None:
         try:
@@ -126,9 +126,9 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     
     processed_dfs = {}
 
-    # ------------------ Process ONLY PACKED DF ------------------
+    # ------------------ Process ONLY PACKED DF (and skip RT/RTO) ------------------
     for file_name, file_obj, df_key, order_id_cols in file_list:
-        if file_key != 'packed_df': # Skip RT and RTO for now
+        if df_key != 'packed_df': # Skip RT and RTO for now
             processed_dfs[df_key] = None
             continue
 
@@ -154,7 +154,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
                      merged_df = df
                      st.warning(f"**{file_name}**: SKU ID column not found, skipping SKU merger.")
 
-                # --- Step 4b: Merge Cost Price using Seller SKU Code (FIXED MERGE LOGIC) ---
+                # --- Step 4b: Merge Cost Price using Seller SKU Code ---
                 if cost_map_df is not None:
                     sku_col_in_df = 'seller_sku_code'
                     
@@ -215,12 +215,10 @@ def process_combined_settlement(all_csv_objects):
     सभी Prepaid, Postpaid, और Outstanding data को पढ़ता है और Merged Pivot Table
     को Settled और Outstanding अमाउंट के Bifurcation के साथ बनाता है।
     """
-    # ... (function body remains the same as before) ...
     TARGET_COL_ID = 'order_release_id'
     MATCH_IDS = ['orderreleaseid', 'releaseid']
     MATCH_SETTLED = 'settledamount'
     MATCH_UNSETTLED = 'unsettledamount'
-    # ... (rest of the function body remains the same) ...
 
     st.subheader("2. Combined Settlement & Outstanding Pivot")
     
@@ -287,18 +285,18 @@ def process_combined_settlement(all_csv_objects):
     combined_df = pd.concat(all_dfs, ignore_index=True)
     
     pivot_table = combined_df.groupby(TARGET_COL_ID).agg(
-        Total_Settled_Amount=('Settled_Amount_Type', 'sum'), # Renamed for clarity
-        Total_Outstanding_Amount=('Outstanding_Amount_Type', 'sum') # Renamed for clarity
+        Total_Settled_Amount=('Settled_Amount_Type', 'sum'),
+        Total_Outstanding_Amount=('Outstanding_Amount_Type', 'sum')
     ).reset_index()
     
-    # Ensure the merging column name is standardized for the Packed DF
+    # Renaming 'order_release_id' to 'order_id' to match Packed sheet for merging
     pivot_table.rename(columns={TARGET_COL_ID: 'order_id'}, inplace=True) 
 
     st.success("Final Merged Payment Pivot Table created successfully.")
     return pivot_table
 
 # ---------------------------------------------------------------------------------
-# --- NEW FUNCTION: Create Final Report Sheet ---
+# --- NEW FUNCTION: Create Final Report Sheet (Order_ID ADDED) ---
 # ---------------------------------------------------------------------------------
 
 def create_final_packed_sheet(packed_df, payment_pivot_df):
@@ -310,6 +308,9 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
         return None
         
     st.subheader("3. Generating Final Report Sheet")
+
+    # Normalize column names in packed_df first
+    packed_df.columns = packed_df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('"', '')
 
     # 1. Merge Payment Data (using 'order_id')
     if payment_pivot_df is not None and 'order_id' in packed_df.columns:
@@ -330,23 +331,22 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
         final_df['Total_Settled_Amount'] = 0.0
         st.warning("Payment Pivot data not available or 'order_id' missing. Settled Amount set to 0.")
 
-    # 2. Select and format required columns
+    # 2. Select and format required columns (Order_ID ADDED HERE)
     required_cols = [
+        'order_id', # Added as requested
         'order_packed_date', 
         'brand', 
-        'seller sku code', 
+        'seller_sku_code', 
         'shipment_value', 
         'tax_amount', 
         'quantity', 
-        'Cost_Price', 
-        'Total_Settled_Amount'
+        'cost_price', 
+        'total_settled_amount'
     ]
 
-    # Normalize column names in final_df to match the requirement (lower case with underscore)
-    final_df.columns = final_df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('"', '')
-    
-    # Map required names to the dataframe's normalized names
+    # Map normalized names to the desired final column names
     col_mapping = {
+        'order_id': 'Order_ID', # Added
         'order_packed_date': 'Order_Packed_Date',
         'brand': 'Brand',
         'seller_sku_code': 'Seller_SKU_Code',
@@ -401,7 +401,7 @@ def main():
     st.markdown("---")
     
     # ----------------------------------------------------
-    #                  SIDEBAR UPLOADERS (NO CHANGE)
+    #                  SIDEBAR UPLOADERS 
     # ----------------------------------------------------
     st.sidebar.header("📁 1. Files for SKU, Cost & Invoice Merger")
     
@@ -486,7 +486,6 @@ def main():
             
             if success:
                 with st.spinner("Merging SKU, Cost and Invoice data into Packed Sheet..."):
-                    # NOTE: RT/RTO are processed but returned as None/empty as per the skip logic inside
                     packed_df_merged, rt_df_merged, rto_df_merged = process_sku_merger(
                         packed_obj, rt_obj, rto_obj, seller_listings_file, cost_sheet_file, sales_b2c_file
                     )
@@ -510,7 +509,7 @@ def main():
                     packed_df_merged, rt_df_merged, rto_df_merged, df_merged_pivot, df_final_report
                 )
             
-            st.success("✅ Multi-sheet Excel file is ready. Your Final Report sheet is the first sheet.")
+            st.success("✅ Multi-sheet Excel file is ready. Your **Final_Report** sheet is the first sheet.")
             
             st.download_button(
                 label="⬇️ Download Complete Merged Data (Excel)",
@@ -521,11 +520,11 @@ def main():
             )
             st.markdown("---")
             
-            st.subheader("Preview of Final Report Sheet")
+            st.subheader("Preview of Final Report Sheet (Order_ID Included)")
             st.dataframe(df_final_report.head(10))
 
         else:
-            st.error("Final Excel report could not be generated. Please check if Packed.csv and Seller Listings Report were uploaded correctly.")
+            st.error("Final Excel report could not be generated. Please check all file uploads and processing steps.")
 
 
 # Streamlit App को रन करें
