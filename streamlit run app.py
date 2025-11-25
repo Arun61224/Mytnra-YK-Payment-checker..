@@ -5,9 +5,7 @@ import zipfile
 
 # --- फ़ंक्शन: Packed/RT/RTO ZIP हैंडलिंग (नो चेंज) ---
 def handle_packed_rto_zip_upload(zip_file):
-    """
-    ZIP फ़ाइल को एक्सट्रैक्ट करता है और Packed, RT.., RTO.csv को StringIO ऑब्जेक्ट के रूप में वापस करता है।
-    """
+    # ... (Logic remains the same) ...
     if zip_file is None:
         return None, None, None, False
 
@@ -35,9 +33,7 @@ def handle_packed_rto_zip_upload(zip_file):
 
 # --- फ़ंक्शन: Prepaid Settlement ZIP हैंडलिंग (नो चेंज) ---
 def handle_settlement_zip(zip_file):
-    """
-    Settlement ZIP फ़ाइल को एक्सट्रैक्ट करता है और सभी CSV फ़ाइलों को list of StringIO objects के रूप में वापस करता है।
-    """
+    # ... (Logic remains the same) ...
     if zip_file is None:
         return None
         
@@ -65,7 +61,7 @@ def handle_settlement_zip(zip_file):
 
 # --- फ़ंक्शन: SKU Merger प्रोसेसिंग (नो चेंज) ---
 def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file):
-    # ... (SKU merger logic remains the same) ...
+    # ... (Logic remains the same) ...
     st.subheader("1. SKU Code Merger Process")
     
     try:
@@ -95,6 +91,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
                 merge_column = None
                 original_sku_id_name = None
                 
+                # Column normalization and merge logic remains the same
                 if 'sku_id' in df.columns:
                     merge_column = 'sku_id'
                     original_sku_id_name = 'sku_id'
@@ -137,10 +134,11 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
 
-# --- फ़ंक्शन: Prepaid Settlement Pivot (UPDATED for correct column names) ---
+# --- फ़ंक्शन: Prepaid Settlement Pivot (UPDATED: Case-Insensitive Column Finder) ---
 def process_settlement_data(settlement_csv_objects):
     """
     settlement_csv_objects को पढ़ता है और Order_Released_ID के आधार पर Settled_Amount का pivot table बनाता है।
+    कॉलम नामों को Case-Insensitive तरीके से खोजता है।
     """
     st.subheader("2. Prepaid Settlement Pivot Process")
     
@@ -149,34 +147,50 @@ def process_settlement_data(settlement_csv_objects):
 
     all_dfs = []
     
-    # सही कॉलम नाम
-    REQUIRED_COL_ID = 'Order_Released_ID'
-    REQUIRED_COL_AMOUNT = 'Settled_Amount'
-    required_cols = [REQUIRED_COL_ID, REQUIRED_COL_AMOUNT]
+    # अपेक्षित कॉलम नाम (Normalization के लिए)
+    TARGET_COL_ID = 'order_release_id'
+    TARGET_COL_AMOUNT = 'Settled_Amount'
+    
+    # उन नामों को जिन्हें हमें मैच करना है (lower case में)
+    MATCH_ID = TARGET_COL_ID.lower().replace('_', '')
+    MATCH_AMOUNT = TARGET_COL_AMOUNT.lower().replace('_', '')
 
     for i, file_obj in enumerate(settlement_csv_objects):
         file_name = f"Settlement_File_{i+1}"
         try:
-            # StringIO object को Pandas सीधे पढ़ सकता है
             df = pd.read_csv(file_obj)
             
-            # कॉलम नामों को साफ करें ताकि वे मैच हो सकें
-            df.columns = df.columns.str.strip().str.replace('"', '')
+            # कॉलम नामों को Normalize करें: Lowercase + Spaces/Quotes हटाएँ
+            normalized_cols = {col: col.strip().replace('"', '').lower().replace('_', '') for col in df.columns}
             
-            # सुनिश्चित करें कि दोनों कॉलम मौजूद हैं
-            if not all(col in df.columns for col in required_cols):
-                st.error(f"File **{file_name}** is missing required columns ({REQUIRED_COL_ID} and {REQUIRED_COL_AMOUNT}). Skipping.")
-                # st.dataframe(df.columns.tolist()) # Debugging के लिए
+            # फ़ाइल के कॉलम नामों में TARGET कॉलम को खोजें
+            found_id_name = None
+            found_amount_name = None
+
+            for original_name, norm_name in normalized_cols.items():
+                if norm_name == MATCH_ID:
+                    found_id_name = original_name
+                if norm_name == MATCH_AMOUNT:
+                    found_amount_name = original_name
+            
+            if not found_id_name or not found_amount_name:
+                st.error(f"File **{file_name}** is missing required columns. Expected '{TARGET_COL_ID}' and '{TARGET_COL_AMOUNT}'.")
                 continue
 
             # केवल आवश्यक कॉलम चुनें
-            df_subset = df[required_cols].copy()
+            df_subset = df[[found_id_name, found_amount_name]].copy()
+            
+            # कॉलम को अपेक्षित नाम दें ताकि Pivot Table सही से बन सके
+            df_subset.rename(columns={
+                found_id_name: TARGET_COL_ID, 
+                found_amount_name: TARGET_COL_AMOUNT
+            }, inplace=True)
             
             # Settled_Amount को numeric में बदलें 
-            df_subset[REQUIRED_COL_AMOUNT] = pd.to_numeric(df_subset[REQUIRED_COL_AMOUNT], errors='coerce')
+            df_subset[TARGET_COL_AMOUNT] = pd.to_numeric(df_subset[TARGET_COL_AMOUNT], errors='coerce')
             
             all_dfs.append(df_subset)
-            st.success(f"**{file_name}** read successfully.")
+            st.success(f"**{file_name}** read successfully with column names '{found_id_name}' and '{found_amount_name}'.")
             
         except Exception as e:
             st.error(f"Error reading **{file_name}**: {e}")
@@ -187,8 +201,8 @@ def process_settlement_data(settlement_csv_objects):
         
     combined_df = pd.concat(all_dfs, ignore_index=True)
     # Pivot Table बनाएँ
-    pivot_table = combined_df.groupby(REQUIRED_COL_ID)[REQUIRED_COL_AMOUNT].sum().reset_index()
-    pivot_table.rename(columns={REQUIRED_COL_AMOUNT: 'Total_Settled_Amount'}, inplace=True)
+    pivot_table = combined_df.groupby(TARGET_COL_ID)[TARGET_COL_AMOUNT].sum().reset_index()
+    pivot_table.rename(columns={TARGET_COL_AMOUNT: 'Total_Settled_Amount'}, inplace=True)
     
     st.success("Pivot Table created successfully.")
     return pivot_table
@@ -196,9 +210,7 @@ def process_settlement_data(settlement_csv_objects):
 
 # --- फ़ंक्शन: मल्टी-शीट Excel डाउनलोडर (नो चेंज) ---
 def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_pivot):
-    """
-    चार DataFrames को एक Excel फ़ाइल की अलग-अलग शीट्स में लिखता है (Sheet 4 पर Pivot Table)।
-    """
+    # ... (Logic remains the same) ...
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
