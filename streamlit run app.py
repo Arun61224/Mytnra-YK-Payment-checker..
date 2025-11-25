@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import zipfile
+from datetime import datetime # datetime import kiya gaya hai
 
 # --- ZIP, Settlement & Excel Handling Functions (NO CHANGE) ---
 
@@ -62,7 +63,7 @@ def handle_outstanding_csv(csv_file):
         return []
         
 # ---------------------------------------------------------------------------------
-# --- MODIFIED: SKU Merger (Invoice Logic REMOVED) ---
+# --- SKU Merger (Invoice Logic REMOVED) (NO CHANGE) ---
 # ---------------------------------------------------------------------------------
 
 def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file, cost_sheet_file):
@@ -286,7 +287,7 @@ def process_combined_settlement(all_csv_objects):
     return pivot_table
 
 # ---------------------------------------------------------------------------------
-# --- Create Final Report Sheet (NO CHANGE) ---
+# --- MODIFIED: Create Final Report Sheet (Date Format and Column Order Updated) ---
 # ---------------------------------------------------------------------------------
 
 def create_final_packed_sheet(packed_df, payment_pivot_df):
@@ -294,7 +295,7 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
     Packed data को Payment Pivot data के साथ merge करता है, Total Payment Received/Outstanding 
     कैलकुलेट करता है, और columns को final format में select करता है।
     
-    इसमें Order_ID को Large Numeric (Int64) में बदलने का प्रयास भी शामिल है।
+    इसमें Order_Packed_Date का Format (YYYYMMDD to DD-MMM-YYYY) और Order भी बदला गया है।
     """
     if packed_df is None:
         st.error("Packed data is not available for final report generation.")
@@ -349,10 +350,32 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
         final_df['Total_Payment'] = 0.0 
         st.warning("Payment Pivot data not available. Payment amounts set to 0.")
 
-    # 2. Select and format required columns 
+
+    # --- 2. Date Formatting (YYYYMMDD to DD-MMM-YYYY) ---
+    date_col = 'order_packed_date'
+    if date_col in final_df.columns:
+        def format_packed_date(date_str):
+            if pd.isna(date_str) or not date_str:
+                return None
+            try:
+                # Assuming date_str is either 20251021 or 2025-10-21 (or similar)
+                date_str = str(int(date_str)) if isinstance(date_str, (int, float)) else str(date_str).split(' ')[0].replace('-', '')
+                if len(date_str) == 8:
+                    return datetime.strptime(date_str, '%Y%m%d').strftime('%d-%b-%Y')
+                return date_str # Return as is if format is unknown
+            except:
+                return None
+        
+        final_df[date_col] = final_df[date_col].apply(format_packed_date)
+        st.success(f"✅ Date format in **'{date_col}'** converted to **DD-MMM-YYYY**.")
+    else:
+        st.warning(f"⚠️ Warning: Date column '{date_col}' not found for formatting.")
+
+
+    # --- 3. Select and format required columns (New Order) ---
     required_cols_order = [
+        'order_packed_date', # NEW POSITION: First
         'order_id', 
-        'order_packed_date', 
         'brand', 
         'seller_sku_code', 
         'shipment_value', 
@@ -366,8 +389,8 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
 
     # Map normalized names to the desired final column names
     col_mapping = {
-        'order_id': 'Order_ID',
         'order_packed_date': 'Order_Packed_Date',
+        'order_id': 'Order_ID',
         'brand': 'Brand',
         'seller_sku_code': 'Seller_SKU_Code',
         'shipment_value': 'Shipment_Value',
@@ -416,9 +439,6 @@ def convert_dataframes_to_excel(df_packed, df_rt, df_rto, df_merged_pivot, df_fi
             df_final_report.to_excel(writer, sheet_name='Final_Report', index=False)
         
         # Packed, RT, RTO sheets are now ignored as per user request.
-        # if df_packed is not None: df_packed.to_excel(writer, sheet_name='Packed_Merged', index=False)
-        # if df_rt is not None: df_rt.to_excel(writer, sheet_name='RT_Merged', index=False)
-        # if df_rto is not None: df_rto.to_excel(writer, sheet_name='RTO_Merged', index=False)
 
         if df_merged_pivot is not None:
             df_merged_pivot.to_excel(writer, sheet_name='Payment_Pivot', index=False) 
@@ -427,7 +447,7 @@ def convert_dataframes_to_excel(df_packed, df_rt, df_rto, df_merged_pivot, df_fi
     return processed_excel_data
 
 
-# --- MODIFIED: Streamlit डैशबोर्ड लेआउट (Invoice Uploader REMOVED) ---
+# --- Streamlit डैशबोर्ड लेआउट (NO CHANGE from last modification) ---
 
 def main():
     st.set_page_config(
