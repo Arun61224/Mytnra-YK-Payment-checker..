@@ -59,7 +59,7 @@ def handle_outstanding_csv(csv_file):
         return []
 
 # ---------------------------------------------------------------------------------
-# --- SKU Merger (FINAL FIXED Logic for Cost Sheet column detection) ---
+# --- SKU Merger (FINAL FIXED Logic for Cost Sheet column detection and Merging) ---
 # ---------------------------------------------------------------------------------
 
 def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file, cost_sheet_file, sales_b2c_file):
@@ -87,7 +87,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
             # Normalize column names for matching
             cost_df.columns = cost_df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('"', '')
             
-            # Find Seller SKU code column (looking for 'seller_sku' or 'sku_code')
+            # Find Seller SKU code column
             sku_col_name = next((col for col in cost_df.columns if 'seller_sku' in col or 'sku_code' in col), None)
 
             # Find Cost Price column (FIXED: Now checks for 'cost' or 'price' in the name)
@@ -142,6 +142,7 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
                 df = pd.read_csv(file_obj)
                 
                 # --- Step 4a: Merge SKU ID to get Seller SKU Code ---
+                # (SKU merger logic remains the same, ensuring 'seller_sku_code' is added)
                 merge_column = next((col for col in ['sku_id', 'sku id'] if col in df.columns), None)
                 if merge_column:
                     original_sku_id_name = merge_column
@@ -165,32 +166,28 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
                      merged_df = df
                      st.warning(f"**{file_name}**: SKU ID column not found, skipping SKU merger.")
 
-                # --- Step 4b: Merge Cost Price using Seller SKU Code (FIXED Logic applied here) ---
+                # --- Step 4b: Merge Cost Price using Seller SKU Code (FIXED MERGE LOGIC) ---
                 if cost_map_df is not None:
-                    # Renaming columns for robust merge, ensuring 'seller_sku_code' is present
-                    df_for_cost_merge = merged_df.copy()
                     
-                    # Normalize columns to handle variations like 'seller sku code '
-                    normalized_cols_map = {col: col.strip().lower().replace(' ', '_').replace('"', '') for col in df_for_cost_merge.columns}
+                    # Find the seller SKU column name in the currently merged DF
+                    sku_col_in_df = 'seller_sku_code'
                     
-                    # Find the normalized seller SKU column name in the merged DF
-                    sku_col_in_df = next((orig_name for orig_name, norm_name in normalized_cols_map.items() if 'seller_sku_code' == norm_name), None)
-
-                    if sku_col_in_df:
-                        # Rename the column temporarily for merging
-                        df_for_cost_merge.rename(columns={sku_col_in_df: 'seller_sku_code'}, inplace=True)
-                        df_for_cost_merge['seller_sku_code'] = df_for_cost_merge['seller_sku_code'].astype(str)
+                    if sku_col_in_df in merged_df.columns:
                         
+                        df_for_cost_merge = merged_df.copy()
+                        df_for_cost_merge[sku_col_in_df] = df_for_cost_merge[sku_col_in_df].astype(str)
+                        
+                        # Merge the Cost Price
                         merged_with_cost = pd.merge(
                             df_for_cost_merge, 
                             cost_map_df[['seller_sku_code', 'Cost_Price']], 
                             on='seller_sku_code', 
                             how='left'
                         )
+                        
                         merged_with_cost['Cost_Price'] = merged_with_cost['Cost_Price'].fillna(0.0)
                         
-                        # Rename the column back
-                        merged_with_cost.rename(columns={'seller_sku_code': sku_col_in_df}, inplace=True)
+                        # Ensure the final DataFrame replaces the working DataFrame
                         merged_df = merged_with_cost
                         
                         st.success(f"**{file_name}** merged with Cost Prices.")
@@ -468,7 +465,6 @@ def main():
             
             st.subheader("Preview of Packed Sheet (with Cost Price and Invoice Number)")
             if packed_df_merged is not None:
-                 # Ensure columns exist before displaying
                  display_cols = ['order_id', 'Invoice_Number', 'seller sku code', 'Cost_Price']
                  present_cols = [col for col in display_cols if col in packed_df_merged.columns]
                  st.dataframe(packed_df_merged[present_cols].head(10))
