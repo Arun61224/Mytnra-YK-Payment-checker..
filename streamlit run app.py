@@ -213,12 +213,15 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
-# --- Combined Settlement Pivot Processor (NO CHANGE) ---
+# ---------------------------------------------------------------------------------
+# --- MODIFIED: Combined Settlement Pivot Processor (Added Total Receivable) ---
+# ---------------------------------------------------------------------------------
 
 def process_combined_settlement(all_csv_objects):
     """
     सभी Prepaid, Postpaid, और Outstanding data को पढ़ता है और Merged Pivot Table
-    को Settled और Outstanding अमाउंट के Bifurcation के साथ बनाता है।
+    को Settled और Outstanding अमाउंट के Bifurcation के साथ और **Total Receivable**
+    के साथ बनाता है।
     """
     TARGET_COL_ID = 'order_release_id'
     MATCH_IDS = ['orderreleaseid', 'releaseid']
@@ -294,17 +297,27 @@ def process_combined_settlement(all_csv_objects):
         Total_Outstanding_Amount=('Outstanding_Amount_Type', 'sum') 
     ).reset_index()
     
+    # ------------------ ADDED LOGIC FOR D COLUMN ------------------
+    # Calculate Total Receivable (B + C)
+    pivot_table['Total_Receivable'] = pivot_table['Total_Settled_Amount'] + pivot_table['Total_Outstanding_Amount']
+
     # Renaming 'order_release_id' to 'order_id' to match Packed sheet for merging
-    pivot_table.rename(columns={TARGET_COL_ID: 'order_id'}, inplace=True) 
+    pivot_table.rename(columns={
+        TARGET_COL_ID: 'order_id',
+        'Total_Receivable': 'Total Receivable' # Explicitly rename D column
+    }, inplace=True) 
+    
+    # Ensure the order is correct (A, B, C, D)
+    pivot_table = pivot_table[['order_id', 'Total_Settled_Amount', 'Total_Outstanding_Amount', 'Total Receivable']]
     
     # Ensuring the order_id in pivot is treated as string for robust merging
     pivot_table['order_id'] = pivot_table['order_id'].astype(str)
 
-    st.success("Final Merged Payment Pivot Table created successfully.")
+    st.success("Final Merged Payment Pivot Table created successfully with 'Total Receivable'.")
     return pivot_table
 
 # ---------------------------------------------------------------------------------
-# --- MODIFIED FUNCTION: Create Final Report Sheet (Added robust string conversion) ---
+# --- MODIFIED: Create Final Report Sheet (Added robust string conversion) ---
 # ---------------------------------------------------------------------------------
 
 def create_final_packed_sheet(packed_df, payment_pivot_df):
@@ -338,7 +351,7 @@ def create_final_packed_sheet(packed_df, payment_pivot_df):
         # Payment Pivot में order_id को string में बदलें (यह पहले ही हो चुका है, लेकिन यहाँ पुष्टि कर रहे हैं)
         payment_pivot_df['order_id'] = payment_pivot_df['order_id'].astype(str).str.strip().fillna('')
 
-        # Merge both Settled and Outstanding amounts
+        # We only need Total_Settled_Amount and Total_Outstanding_Amount for the final report calculations
         final_df = pd.merge(
             packed_df,
             payment_pivot_df[['order_id', 'Total_Settled_Amount', 'Total_Outstanding_Amount']],
