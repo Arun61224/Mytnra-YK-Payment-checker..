@@ -47,13 +47,11 @@ def handle_settlement_zip(zip_file, process_name):
         st.error(f"An error occurred during {process_name} ZIP file extraction: {e}")
         return []
 
-# --- फ़ंक्शन: Outstanding CSV हैंडलिंग (नया) ---
 def handle_outstanding_csv(csv_file):
     """Outstanding CSV फ़ाइल को StringIO ऑब्जेक्ट में बदलता है।"""
     if csv_file is None:
         return []
     try:
-        # फ़ाइल को सीधे StringIO ऑब्जेक्ट में बदलें
         file_content = csv_file.getvalue().decode('utf-8', errors='ignore')
         return [io.StringIO(file_content)]
     except Exception as e:
@@ -63,7 +61,6 @@ def handle_outstanding_csv(csv_file):
 # --- SKU Merger (नो चेंज) ---
 
 def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listings_file):
-    # ... (Logic remains the same as previous response) ...
     st.subheader("1. SKU Code Merger Process")
     
     try:
@@ -134,11 +131,12 @@ def process_sku_merger(packed_file_obj, rt_file_obj, rto_file_obj, seller_listin
     
     return processed_dfs.get('packed_df'), processed_dfs.get('rt_df'), processed_dfs.get('rto_df')
 
-# --- फ़ंक्शन: कंबाइंड सेटलमेंट Pivot Processor (अपडेटेड) ---
+# --- फ़ंक्शन: कंबाइंड सेटलमेंट Pivot Processor (UPDATED) ---
 
 def process_combined_settlement(all_csv_objects):
     """
     सभी Prepaid, Postpaid, और Outstanding data को पढ़ता है और एक Final Merged Pivot Table बनाता है।
+    यह 'order_release_id' और 'Release_Id' दोनों को Order ID के रूप में पहचानता है।
     """
     st.subheader("2. Combined Settlement & Outstanding Pivot")
     
@@ -150,13 +148,14 @@ def process_combined_settlement(all_csv_objects):
     
     # अपेक्षित कॉलम नाम (Normalization के लिए)
     TARGET_COL_ID = 'order_release_id'
-    
-    # दो संभावित राशि कॉलम - Settled_Amount (Prepaid/Postpaid) और Unsettled_Amount (Outstanding)
     TARGET_COL_AMOUNT_SETTLED = 'Settled_Amount'
     TARGET_COL_AMOUNT_UNSETTLED = 'Unsettled_Amount'
     
     # उन नामों को जिन्हें हमें मैच करना है (lowercase, underscores removed)
-    MATCH_ID = TARGET_COL_ID.lower().replace('_', '')
+    MATCH_IDS = [
+        'orderreleaseid', # For Prepaid/Postpaid Settlement
+        'releaseid'       # For Outstanding Payment
+    ]
     MATCH_SETTLED = TARGET_COL_AMOUNT_SETTLED.lower().replace('_', '')
     MATCH_UNSETTLED = TARGET_COL_AMOUNT_UNSETTLED.lower().replace('_', '')
 
@@ -171,17 +170,19 @@ def process_combined_settlement(all_csv_objects):
             
             found_id_name = None
             found_amount_name = None
-            amount_type = None # Settled या Unsettled
+            amount_type = None
 
             for original_name, norm_name in normalized_cols.items():
-                if norm_name == MATCH_ID:
+                
+                # ID Column Finder (UPDATED)
+                if norm_name in MATCH_IDS and found_id_name is None:
                     found_id_name = original_name
-                # Settled_Amount को पहले खोजें
+                
+                # Amount Column Finder
                 if norm_name == MATCH_SETTLED:
                     found_amount_name = original_name
                     amount_type = 'Settled'
-                # अगर Settled_Amount नहीं मिला, तो Unsettled_Amount खोजें
-                elif norm_name == MATCH_UNSETTLED:
+                elif norm_name == MATCH_UNSETTLED and amount_type is None:
                     found_amount_name = original_name
                     amount_type = 'Unsettled'
             
@@ -192,7 +193,7 @@ def process_combined_settlement(all_csv_objects):
             # केवल आवश्यक कॉलम चुनें
             df_subset = df[[found_id_name, found_amount_name]].copy()
             
-            # राशि कॉलम को एक स्टैंडर्ड नाम दें (Total_Amount)
+            # कॉलम को अपेक्षित नाम दें
             df_subset.rename(columns={
                 found_id_name: TARGET_COL_ID, 
                 found_amount_name: 'Total_Amount'
@@ -202,7 +203,7 @@ def process_combined_settlement(all_csv_objects):
             df_subset['Total_Amount'] = pd.to_numeric(df_subset['Total_Amount'], errors='coerce')
             
             all_dfs.append(df_subset)
-            st.success(f"**{file_name}** read successfully. Amount found: **{amount_type}**.")
+            st.success(f"**{file_name}** read successfully. ID found: '{found_id_name}', Amount found: **{amount_type}**.")
             
         except Exception as e:
             st.error(f"Error reading **{file_name}**: {e}")
@@ -231,11 +232,11 @@ def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_merged_pivot):
     
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         if df_packed is not None:
-            df_packed.to_excel(writer, sheet_name='Packed', index=False) # Sheet 1
+            df_packed.to_excel(writer, sheet_name='Packed', index=False)
         if df_rt is not None:
-            df_rt.to_excel(writer, sheet_name='RT', index=False)         # Sheet 2
+            df_rt.to_excel(writer, sheet_name='RT', index=False)
         if df_rto is not None:
-            df_rto.to_excel(writer, sheet_name='RTO', index=False)       # Sheet 3
+            df_rto.to_excel(writer, sheet_name='RTO', index=False)
         if df_merged_pivot is not None:
             df_merged_pivot.to_excel(writer, sheet_name='Merged_Payment_Pivot', index=False) # Sheet 4 (Final Pivot)
     
@@ -243,7 +244,7 @@ def convert_dfs_to_excel(df_packed, df_rt, df_rto, df_merged_pivot):
     return processed_excel_data
 
 
-# --- Streamlit डैशबोर्ड लेआउट (अपडेटेड) ---
+# --- Streamlit डैशबोर्ड लेआउट (नो चेंज) ---
 
 def main():
     st.set_page_config(
@@ -286,7 +287,6 @@ def main():
         key="postpaid_zip"
     )
     
-    # नया CSV अपलोडर
     outstanding_csv_file = st.sidebar.file_uploader(
         "Upload **Outstanding Payment CSV**", 
         type=['csv'],
@@ -306,10 +306,9 @@ def main():
         
         st.header("--- Combined Payment & Outstanding Pivot Results ---")
         
-        # सभी sources से CSV objects इकट्ठा करें
         prepaid_objects = handle_settlement_zip(prepaid_zip_file, "Prepaid")
         postpaid_objects = handle_settlement_zip(postpaid_zip_file, "Postpaid")
-        outstanding_objects = handle_outstanding_csv(outstanding_csv_file) # नया
+        outstanding_objects = handle_outstanding_csv(outstanding_csv_file)
         
         all_csv_objects = prepaid_objects + postpaid_objects + outstanding_objects
         
